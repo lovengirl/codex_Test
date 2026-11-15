@@ -2,8 +2,11 @@
 
 from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
+from html import unescape
+import re
 import sqlite3
 from time import perf_counter
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi.testclient import TestClient
 import pytest
@@ -330,3 +333,109 @@ def test_동시수정과숨김삭제_숨김과원본행_주문유지(authenticat
         assert connection.execute(text("SELECT count(*) FROM customer WHERE id=1")).scalar() == 1
         assert connection.execute(text("SELECT count(*) FROM hidden_customer WHERE customer_id=1")).scalar() == 1
         assert connection.execute(text("SELECT count(*) FROM orders WHERE customer_id=1")).scalar() == 2
+
+
+@pytest.mark.parametrize("q,ids", [
+    ("고객2", [2, 20, 21, 22]), ("CUSTOMER2@EXAMPLE", [2]),
+    ("  고객22  ", [22]), ("없는고객", []),
+])
+def test_이름과이메일_부분검색_대소문자_공백정리(authenticated_client, q, ids):
+    client = authenticated_client
+    seed_customers(client, 22)
+    response = client.get("/customers", params={"q": q})
+    assert response.status_code == 200
+    assert response.context["q"] == q.strip()
+    assert response.context["total"] == len(ids)
+    assert [item["id"] for item in response.context["items"]] == ids
+    assert 'role="search"' in response.text
+    if not ids:
+        assert "검색 결과가 없습니다." in response.text
+
+
+def test_검색_숨김제외_페이지이동시_한글과특수문자검색어유지(authenticated_client):
+    client = authenticated_client
+    seed_customers(client, 41)
+    q = "검색 대상 &+한글"
+    with client.app.state.engine.begin() as connection:
+        connection.execute(text("UPDATE customer SET name=:name WHERE id<=25"), {"name": q})
+        connection.execute(text("INSERT INTO hidden_customer VALUES (1)"))
+    first = client.get("/customers", params={"q": q})
+    assert first.status_code == 200
+    assert first.context["total"] == 24
+    assert first.context["total_pages"] == 2
+    assert [item["id"] for item in first.context["items"]] == list(range(2, 22))
+    next_url = unescape(re.search(r'href="([^"]+)" rel="next"', first.text).group(1))
+    assert parse_qs(urlsplit(next_url).query) == {"q": [q], "page": ["2"]}
+    second = client.get(next_url)
+    assert [item["id"] for item in second.context["items"]] == [22, 23, 24, 25]
+    previous_url = unescape(re.search(r'href="([^"]+)" rel="prev"', second.text).group(1))
+    assert parse_qs(urlsplit(previous_url).query) == {"q": [q], "page": ["1"]}
+    assert 'href="/customers">검색 초기화</a>' in second.text
+    assert client.get("/customers", params={"q": q, "page": 3}).status_code == 404
+    assert client.get("/customers").context["total"] == 40
+
+
+@pytest.mark.parametrize("q,ids", [("%", [1]), ("_", [2]), ("/", [3]), ("' OR 1=1 --", [])])
+def test_검색_와일드카드는_문자그대로_SQL구문은_실행하지않음(authenticated_client, q, ids):
+    client = authenticated_client
+    seed_customers(client, 3)
+    with client.app.state.engine.begin() as connection:
+        connection.execute(text("UPDATE customer SET name=:name WHERE id=:id"), [
+            {"id": 1, "name": "특수%고객"}, {"id": 2, "name": "특수_고객"}, {"id": 3, "name": "특수/고객"},
+        ])
+    response = client.get("/customers", params={"q": q})
+    assert response.status_code == 200
+    assert [item["id"] for item in response.context["items"]] == ids
+    assert response.context["total"] == len(ids)
+
+
+def test_검색어_HTML이스케이프와_숨김고객_검색결과없음(authenticated_client):
+    client = authenticated_client
+    seed_customers(client, 1)
+    q = '\"><script>alert(1)</script>'
+    response = client.get("/customers", params={"q": q})
+    assert response.status_code == 200
+    assert '<script>alert(1)</script>' not in response.text
+    assert '&lt;script&gt;alert(1)&lt;/script&gt;' in response.text
+    with client.app.state.engine.begin() as connection:
+        connection.execute(text("INSERT INTO hidden_customer VALUES (1)"))
+    for q in ("고객1", "customer1@example.com"):
+        response = client.get("/customers", params={"q": q})
+        assert response.context["total"] == 0
+        assert response.context["items"] == []
+
+
+@pytest.mark.parametrize("q", ["", "   "])
+def test_빈검색어는_전체목록과_기존페이지네이션유지(authenticated_client, q):
+    client = authenticated_client
+    seed_customers(client, 21)
+    response = client.get("/customers", params={"q": q})
+    assert response.context["q"] == ""
+    assert response.context["total"] == 21
+    assert len(response.context["items"]) == 20
+    assert 'href="https://testserver/customers?page=2" rel="next"' in response.text
+
+
+def test_검색도_DB에서_조건과_LIMIT_OFFSET_적용(authenticated_client):
+    client = authenticated_client
+    seed_customers(client, 41)
+    statements = []
+
+    def capture(connection, cursor, statement, parameters, context, executemany):
+        if "FROM customer" in statement:
+            statements.append((statement, parameters))
+
+    engine = client.app.state.engine
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        response = client.get("/customers", params={"q": "고객", "page": 2})
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert response.status_code == 200
+    assert len(statements) == 2
+    assert all("LIKE" in sql and "hidden_customer" in sql for sql, _ in statements)
+    assert all("고객" not in sql for sql, _ in statements)
+    assert "LIMIT ? OFFSET ?" in statements[1][0]
+    assert statements[1][1][-2:] == (20, 20)
+    assert response.context["total"] == 41
+    assert len(response.context["items"]) == 20

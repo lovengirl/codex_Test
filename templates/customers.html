@@ -3,6 +3,12 @@
 {% block content %}
 <h1>고객 관리</h1>
 <p><a href="/customers/new">고객 등록</a></p>
+<form method="get" action="/customers" role="search">
+  <label for="customer-search">이름 또는 이메일 검색</label>
+  <input id="customer-search" type="search" name="q" value="{{ q }}" placeholder="이름 또는 이메일 입력">
+  <button type="submit">검색</button>
+  {% if q %}<a href="/customers">검색 초기화</a>{% endif %}
+</form>
 <p>총 {{ total }}명 · {{ page }} / {{ total_pages }}페이지 · 페이지당 20명</p>
 {% if items %}
 <div style="overflow-x: auto;">
@@ -18,18 +24,22 @@
     </tbody>
   </table>
 </div>
+{% elif q %}
+<p>검색 결과가 없습니다.</p>
 {% else %}
 <p>표시할 고객이 없습니다.</p>
 {% endif %}
+{% set pagination_url = request.url_for('customers') %}
+{% if q %}{% set pagination_url = pagination_url.include_query_params(q=q) %}{% endif %}
 <nav aria-label="고객 목록 페이지">
   {% if page > 1 %}
-  <a href="{{ request.url_for('customers') }}?page=1">처음</a>
-  <a href="{{ request.url_for('customers') }}?page={{ page - 1 }}" rel="prev">이전</a>
+  <a href="{{ pagination_url.include_query_params(page=1) }}">처음</a>
+  <a href="{{ pagination_url.include_query_params(page=page - 1) }}" rel="prev">이전</a>
   {% endif %}
   <span aria-current="page">{{ page }} / {{ total_pages }}</span>
   {% if page < total_pages %}
-  <a href="{{ request.url_for('customers') }}?page={{ page + 1 }}" rel="next">다음</a>
-  <a href="{{ request.url_for('customers') }}?page={{ total_pages }}">마지막</a>
+  <a href="{{ pagination_url.include_query_params(page=page + 1) }}" rel="next">다음</a>
+  <a href="{{ pagination_url.include_query_params(page=total_pages) }}">마지막</a>
   {% endif %}
 </nav>
 {% endblock %}

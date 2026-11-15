@@ -1,6 +1,6 @@
 """고객 조회의 공통 숨김 제외 조건과 DB 페이지네이션."""
 
-from sqlalchemy import column, exists, func, select, table
+from sqlalchemy import column, exists, func, or_, select, table
 from sqlalchemy.orm import Session
 
 
@@ -22,12 +22,18 @@ def visible_customer(session: Session, customer_id: int):
     ).mappings().first()
 
 
-def customer_page(session: Session, page: int):
+def customer_page(session: Session, page: int, q: str = ""):
     """전체 행을 로드하지 않고 건수와 최대 20명의 고객만 조회한다."""
     visible = visible_customers()
+    q = q.strip()
+    if q:
+        visible = visible.where(or_(
+            customer.c.name.icontains(q, autoescape=True),
+            customer.c.email.icontains(q, autoescape=True),
+        ))
     total = session.scalar(select(func.count()).select_from(visible.subquery()))
     total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     items = session.execute(
         visible.order_by(customer.c.id).limit(PAGE_SIZE).offset((page - 1) * PAGE_SIZE)
     ).mappings().all()
-    return {"items": items, "page": page, "total": total, "total_pages": total_pages}
+    return {"items": items, "page": page, "total": total, "total_pages": total_pages, "q": q}

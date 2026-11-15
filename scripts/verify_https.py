@@ -90,6 +90,15 @@ def verify_customer_pagination(client, db_path, report):
     assert max(durations) < 1, "고객 목록 HTTPS 응답이 1초를 초과했습니다."
     assert client.get("/customers?page=501").status_code == 404
     report(f"[통과] 임시 DB 고객 10,000명 → 500페이지, HTTPS 1·250·500페이지 최대 응답 {max(durations):.3f}초")
+    for q in ("페이지검증9999", f"PAGINATION-{unique}-9999@EXAMPLE.COM"):
+        response = client.get("/customers", params={"q": q})
+        assert response.status_code == 200 and "총 1명" in response.text
+        assert re.findall(r"<tr><td>(\d+)</td>", response.text) == [str(first_id + 9999)]
+    response = client.get("/customers", params={"q": "페이지검증", "page": 2})
+    assert response.status_code == 200 and "총 10000명" in response.text
+    assert len(re.findall(r"<tr><td>(\d+)</td>", response.text)) == 20
+    assert 'name="q" value="페이지검증"' in response.text
+    report("[통과] HTTPS 이름·이메일 부분 검색, 이메일 대소문자 처리, 검색 결과 20명씩 페이지 이동")
 
 
 def verify_customer_crud(client, db_path, employee_email, report):
@@ -135,12 +144,16 @@ def verify_customer_crud(client, db_path, employee_email, report):
     listing = client.get("/customers")
     assert f"총 {original_total}명" in listing.text
     assert f'href="{detail_url}"' not in listing.text
+    searched = client.get("/customers", params={"q": changed["email"]})
+    assert searched.status_code == 200 and "총 0명" in searched.text
+    assert "검색 결과가 없습니다." in searched.text
     with closing(sqlite3.connect(db_path)) as connection:
         stored = connection.execute("SELECT name, email, address, grade FROM customer WHERE id=?", (customer_id,)).fetchone()
         assert stored == tuple(changed[field] for field in ("name", "email", "address", "grade"))
         assert connection.execute("SELECT customer_id FROM hidden_customer WHERE customer_id=?", (customer_id,)).fetchone() == (customer_id,)
         assert connection.execute("SELECT customer_id FROM orders WHERE id=?", (order_id,)).fetchone() == (customer_id,)
     report("[통과] HTTPS 숨김 삭제 → 목록·상세에서 제외, customer 원본 행·hidden_customer 기록·주문 유지")
+    report("[통과] 숨김 고객은 이메일 검색 결과에서도 제외")
 
 
 def verify_authentication(context, report, db_path, base_url):
