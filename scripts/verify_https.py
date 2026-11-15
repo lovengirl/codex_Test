@@ -150,9 +150,11 @@ def verify_customer_crud(client, db_path, employee_email, report):
                 "VALUES (?, ?, ?, 2, 2000, '2026-11-15', '완료')",
                 (customer_id, product_id, employee_id),
             ).lastrowid
-    assert client.get(detail_url + "/edit").status_code == 200
+    form = client.get(detail_url + "/edit")
+    assert form.status_code == 200
+    version = re.search(r'name="version" value="([a-f0-9]+)"', form.text).group(1)
     changed = values | {"name": "HTTPS수정고객", "address": "서울", "grade": "VIP"}
-    response = client.post(detail_url + "/edit", data=changed)
+    response = client.post(detail_url + "/edit", data=changed | {"version": version})
     assert response.status_code == 303 and response.headers["location"] == detail_url
     detail = client.get(detail_url)
     assert detail.status_code == 200

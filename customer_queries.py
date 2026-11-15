@@ -1,12 +1,17 @@
 """고객 조회의 공통 숨김 제외 조건과 DB 페이지네이션."""
 
-from sqlalchemy import column, exists, func, or_, select, table
+import hashlib
+import json
+
+from sqlalchemy import column, exists, func, or_, select, table, text
 from sqlalchemy.orm import Session
 
 from database import compact_name
 
 
 PAGE_SIZE = 20
+# casefold 확장과 LIKE 이스케이프 후에도 SQLite 패턴 길이 한도 이내로 제한한다.
+MAX_SEARCH_LENGTH = 1000
 customer = table("customer", *(column(name) for name in ("id", "name", "email", "address", "grade")))
 hidden_customer = table("hidden_customer", column("customer_id"))
 
@@ -24,8 +29,17 @@ def visible_customer(session: Session, customer_id: int):
     ).mappings().first()
 
 
+def customer_version(item):
+    """수정 폼이 읽은 고객 값의 버전을 비교한다. 저장된 행은 변경하지 않는다."""
+    original = json.dumps(dict(item), sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(original.encode("utf-8")).hexdigest()
+
+
 def customer_page(session: Session, page: int, q: str = "", grade: str = "", region: str = ""):
     """전체 행을 로드하지 않고 건수와 최대 20명의 고객만 조회한다."""
+    # sqlite3 legacy 모드에서는 Session의 SELECT만으로 읽기 트랜잭션이 시작되지 않는다.
+    if not session.connection().connection.driver_connection.in_transaction:
+        session.execute(text("BEGIN"))
     visible = visible_customers()
     q = q.strip()
     grade, region = grade.strip(), region.strip()

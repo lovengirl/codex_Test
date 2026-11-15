@@ -9,8 +9,9 @@ from fastapi.testclient import TestClient
 import jwt
 import pytest
 from sqlalchemy import text
+from sqlalchemy import event
 
-from authentication import ALGORITHM, COOKIE_NAME, load_signing_key
+from authentication import ALGORITHM, COOKIE_NAME, create_token, load_signing_key
 from database import connect
 from main import create_app
 
@@ -310,12 +311,12 @@ def test_쿠키만료로_토큰없는_브라우저도_로그인안내(client):
 
 @pytest.mark.parametrize("remaining", [1, 299, 300, 301, 3600])
 @pytest.mark.parametrize("path", ["/customers", "/", "/health"])
-def test_만료5분이내만_60분으로_자동갱신(client, frozen_time, remaining, path):
+def test_인증조회경로만_만료5분이내_자동갱신_상태확인제외(client, frozen_time, remaining, path):
     signup(client)
     original = install_token(client, frozen_time, remaining)
     response = client.get(path)
     assert response.status_code == 200
-    if remaining > 300:
+    if remaining > 300 or path == "/health":
         assert "set-cookie" not in response.headers
         assert client.cookies[COOKIE_NAME] == original
         return
@@ -371,3 +372,58 @@ def test_삭제된직원_유효서명토큰도_갱신하지않음(client, frozen
     response = client.get("/customers", headers={"Accept": "application/json"})
     assert response.status_code == 401
     assert "Max-Age=0" in response.headers["set-cookie"]
+
+
+@pytest.mark.parametrize("email,normalized", [
+    ("person@xn--bcher-kva.de", "person@bücher.de"),
+    ("u\u0308ser@example.com", "üser@example.com"),
+])
+def test_가입과로그인_이메일정규화일치_같은입력으로로그인(client, email, normalized):
+    assert signup(client, email=email).status_code == 303
+    with client.app.state.engine.connect() as connection:
+        assert connection.execute(text("SELECT email FROM employees")).scalar() == normalized
+    assert signin(client, email=email).status_code == 303
+    assert client.get("/customers").status_code == 200
+    client.cookies.clear()
+    assert signin(client, email=normalized).status_code == 303
+
+
+def test_상태확인은_인증쿠키와직원장애에독립_고객DB장애는503(client):
+    client.cookies.set(COOKIE_NAME, create_token(1, client.app.state.jwt_secret))
+    with client.app.state.engine.begin() as connection:
+        connection.execute(text("DROP TABLE employees"))
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "database": "ok"}
+    assert "set-cookie" not in response.headers
+    with client.app.state.engine.begin() as connection:
+        connection.execute(text("DROP TABLE customer"))
+    response = client.get("/health")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "데이터베이스 연결을 확인해 주세요."
+
+
+def test_가입_DB잠금은_503_잠금해제후_한계정만생성(client):
+    engine = client.app.state.engine
+    with engine.connect() as connection:
+        db_path = connection.execute(text("PRAGMA database_list")).first()[2]
+
+    def short_timeout(connection, cursor, statement, parameters, context, executemany):
+        if statement == "BEGIN IMMEDIATE":
+            cursor.execute("PRAGMA busy_timeout=50")
+
+    event.listen(engine, "before_cursor_execute", short_timeout)
+    try:
+        with closing(connect(db_path)) as blocker:
+            blocker.execute("BEGIN IMMEDIATE")
+            response = signup(client)
+            blocker.rollback()
+    finally:
+        event.remove(engine, "before_cursor_execute", short_timeout)
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "1"
+    assert "잠시 후 다시 시도해 주세요" in response.text
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM employees")).scalar() == 0
+    assert signup(client).status_code == 303
+    assert signin(client).status_code == 303

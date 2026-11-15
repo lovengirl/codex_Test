@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from authentication import COOKIE_NAME, create_token
-from customer_queries import customer, visible_customers
+from customer_queries import MAX_SEARCH_LENGTH, customer, visible_customers
 from database import connect
 from main import create_app
 from models import SCHEMA
@@ -184,7 +184,8 @@ def test_등록_목록반영_수정_상세반영_숨김삭제_원본행보존(au
     assert form_page.status_code == 200
     assert 'value="등록고객"' in form_page.text
     changed = CUSTOMER_INPUT | {"name": "수정고객", "address": "서울", "grade": "VIP"}
-    response = client.post(detail_url + "/edit", data=changed, follow_redirects=False)
+    response = client.post(detail_url + "/edit", data=changed | {"version": form_page.context["version"]},
+                           follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == detail_url
     assert dict(client.get(detail_url).context["customer"]) == {"id": customer_id, **changed}
@@ -241,7 +242,10 @@ def test_등록수정_입력검증_실패시_기존행보존(authenticated_clien
     client = authenticated_client
     seed_customers(client, 1)
     for path in ("/customers", "/customers/1/edit"):
-        response = client.post(path, data=CUSTOMER_INPUT | changes)
+        values = CUSTOMER_INPUT | changes
+        if path.endswith("/edit"):
+            values["version"] = client.get(path).context["version"]
+        response = client.post(path, data=values)
         assert response.status_code == 422
         assert 'role="alert"' in response.text
         assert "목록검증직원님 안녕하세요" in response.text
@@ -258,7 +262,10 @@ def test_이메일중복_기존대문자와_숨김고객도_409_수정충돌시�
         connection.execute(text("UPDATE customer SET email='EXISTING@example.com' WHERE id=1"))
     for _ in range(2):
         for path in ("/customers", "/customers/2/edit"):
-            response = client.post(path, data=CUSTOMER_INPUT | {"email": " existing@example.com "})
+            values = CUSTOMER_INPUT | {"email": " existing@example.com "}
+            if path.endswith("/edit"):
+                values["version"] = client.get(path).context["version"]
+            response = client.post(path, data=values)
             assert response.status_code == 409
             assert "이미 등록된 이메일입니다." in response.text
         with client.app.state.engine.begin() as connection:
@@ -323,8 +330,10 @@ def test_동시등록_중복이메일은_한명만생성(authenticated_client):
 def test_동시수정과숨김삭제_숨김과원본행_주문유지(authenticated_client):
     client = authenticated_client
     seed_orders(client)
+    version = client.get("/customers/1/edit").context["version"]
     with ThreadPoolExecutor(max_workers=2) as executor:
-        update = executor.submit(client.post, "/customers/1/edit", data=CUSTOMER_INPUT, follow_redirects=False)
+        update = executor.submit(client.post, "/customers/1/edit",
+                                 data=CUSTOMER_INPUT | {"version": version}, follow_redirects=False)
         delete = executor.submit(client.post, "/customers/1/delete", follow_redirects=False)
         assert update.result().status_code in (303, 404)
         assert delete.result().status_code == 303
@@ -570,3 +579,154 @@ def test_공백제거검색에서도_퍼센트와밑줄_문자그대로_비교(a
     assert response.status_code == 200
     assert response.context["total"] == 1
     assert [item["id"] for item in response.context["items"]] == [1]
+
+
+def test_동시편집_이전폼은_409_최초수정값보존_다시불러온후저장(authenticated_client):
+    client = authenticated_client
+    seed_customers(client, 1)
+    first = client.get("/customers/1/edit")
+    second = client.get("/customers/1/edit")
+    original = dict(first.context["values"])
+    version = first.context["version"]
+    assert second.context["version"] == version
+    assert f'name="version" value="{version}"' in first.text
+    saved = client.post("/customers/1/edit", data=original | {"address": "부산", "version": version},
+                        follow_redirects=False)
+    assert saved.status_code == 303
+    stale_values = original | {"grade": "VIP", "version": version}
+    for _ in range(2):
+        conflict = client.post("/customers/1/edit", data=stale_values)
+        assert conflict.status_code == 409
+        assert "최신 정보를 다시 불러와 주세요" in conflict.text
+        assert conflict.context["values"]["grade"] == "VIP"
+        assert conflict.context["version"] == version
+        assert client.get("/customers/1").context["customer"]["address"] == "부산"
+    latest = client.get("/customers/1/edit")
+    assert latest.context["version"] != version
+    merged = dict(latest.context["values"]) | {"grade": "VIP", "version": latest.context["version"]}
+    assert client.post("/customers/1/edit", data=merged, follow_redirects=False).status_code == 303
+    stored = client.get("/customers/1").context["customer"]
+    assert stored["address"] == "부산" and stored["grade"] == "VIP"
+
+
+@pytest.mark.parametrize("version", ["", "invalid-version"])
+def test_버전없는_기존폼과_잘못된버전은_덮어쓰기거부(authenticated_client, version):
+    client = authenticated_client
+    seed_customers(client, 1)
+    response = client.post("/customers/1/edit", data=CUSTOMER_INPUT | {"version": version})
+    assert response.status_code == 409
+    assert client.get("/customers/1").context["customer"]["name"] == "고객1"
+
+
+def test_동시수정_같은버전은_한번만저장(authenticated_client):
+    client = authenticated_client
+    seed_customers(client, 1)
+    form = client.get("/customers/1/edit")
+    original = dict(form.context["values"]) | {"version": form.context["version"]}
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(
+            lambda address: client.post("/customers/1/edit", data=original | {"address": address},
+                                        follow_redirects=False), ("부산", "대구"),
+        ))
+    assert sorted(response.status_code for response in responses) == [303, 409]
+
+
+@pytest.mark.parametrize("operation", ["create", "edit", "delete"])
+@pytest.mark.parametrize("lock_type", ["write", "read"])
+def test_DB잠금_시작과커밋실패_503_행보존_해제후재시도(authenticated_client, operation, lock_type):
+    client = authenticated_client
+    seed_customers(client, 1)
+    engine = client.app.state.engine
+    form = client.get("/customers/1/edit")
+    original = dict(form.context["values"])
+    values = CUSTOMER_INPUT | {"version": form.context["version"]}
+    path = "/customers" if operation == "create" else f"/customers/1/{operation}"
+    with engine.connect() as connection:
+        db_path = connection.execute(text("PRAGMA database_list")).first()[2]
+
+    def short_timeout(connection, cursor, statement, parameters, context, executemany):
+        if statement == "BEGIN IMMEDIATE":
+            cursor.execute("PRAGMA busy_timeout=50")
+
+    event.listen(engine, "before_cursor_execute", short_timeout)
+    try:
+        with closing(connect(db_path)) as blocker:
+            blocker.execute("BEGIN IMMEDIATE" if lock_type == "write" else "BEGIN")
+            if lock_type == "read":
+                blocker.execute("SELECT * FROM customer").fetchall()
+            response = client.post(path, data=values, follow_redirects=False)
+            blocker.rollback()
+    finally:
+        event.remove(engine, "before_cursor_execute", short_timeout)
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "1"
+    assert "잠시 후 다시 시도해 주세요" in response.text
+    if operation != "delete":
+        assert response.context["values"] == CUSTOMER_INPUT
+        assert 'value="등록고객"' in response.text
+    if operation == "edit":
+        assert response.context["version"] == form.context["version"]
+    with engine.connect() as connection:
+        assert dict(connection.execute(text("SELECT * FROM customer")).mappings().one()) == original
+        assert connection.execute(text("SELECT count(*) FROM hidden_customer")).scalar() == 0
+    assert client.post(path, data=values, follow_redirects=False).status_code == 303
+    assert client.get("/customers").context["total"] == {"create": 2, "edit": 1, "delete": 0}[operation]
+
+
+def test_총건수와목록_동일스냅샷_조회중숨김에도_일관성유지(authenticated_client):
+    client = authenticated_client
+    seed_customers(client, 21)
+    engine = client.app.state.engine
+    with engine.connect() as connection:
+        db_path = connection.execute(text("PRAGMA database_list")).first()[2]
+        assert connection.execute(text("PRAGMA journal_mode=WAL")).scalar() == "wal"
+    changed = []
+
+    def hide_after_count(connection, cursor, statement, parameters, context, executemany):
+        if not changed and statement.startswith("SELECT customer.id"):
+            changed.append(True)
+            with closing(connect(db_path)) as writer:
+                with writer:
+                    writer.execute("INSERT INTO hidden_customer VALUES (21)")
+
+    event.listen(engine, "before_cursor_execute", hide_after_count)
+    try:
+        response = client.get("/customers?page=2")
+    finally:
+        event.remove(engine, "before_cursor_execute", hide_after_count)
+    assert changed == [True]
+    assert response.status_code == 200
+    assert response.context["total"] == 21
+    assert response.context["total_pages"] == 2
+    assert [item["id"] for item in response.context["items"]] == [21]
+    assert client.get("/customers").context["total"] == 20
+    assert client.get("/customers?page=2").status_code == 404
+
+
+@pytest.mark.parametrize("q", ["x" * (MAX_SEARCH_LENGTH + 1), "x" * 50001])
+def test_긴검색어_SQL실행전_422로거부(authenticated_client, q):
+    client = authenticated_client
+    seed_customers(client, 1)
+    statements = []
+
+    def capture(connection, cursor, statement, parameters, context, executemany):
+        if "FROM customer" in statement:
+            statements.append(statement)
+
+    engine = client.app.state.engine
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        response = client.get("/customers", params={"q": q})
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert response.status_code == 422
+    assert statements == []
+
+
+@pytest.mark.parametrize("character", ["x", "%", "_", "ß"])
+def test_검색어길이_경계값과_이스케이프확장은_정상조회(authenticated_client, character):
+    client = authenticated_client
+    seed_customers(client, 1)
+    response = client.get("/customers", params={"q": character * MAX_SEARCH_LENGTH})
+    assert response.status_code == 200
+    assert f'maxlength="{MAX_SEARCH_LENGTH}"' in response.text

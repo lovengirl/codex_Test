@@ -2,10 +2,10 @@
 
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI
 
 from authentication import (
-    AuthenticationRequired, authentication_required_response, get_optional_user,
+    AuthenticationRequired, authentication_required_response,
     load_signing_key, refresh_auth_cookie,
 )
 from database import DEFAULT_DB_PATH, initialize_database, make_engine
@@ -24,7 +24,7 @@ def create_app(db_path: Path = DEFAULT_DB_PATH) -> FastAPI:
             app.state.engine.dispose()
 
     app = FastAPI(title="Customer Manager", version="0.2.0", lifespan=lifespan,
-                  docs_url=None, redoc_url=None, dependencies=[Depends(get_optional_user)])
+                  docs_url=None, redoc_url=None)
     app.add_exception_handler(AuthenticationRequired, authentication_required_response)
     app.middleware("http")(refresh_auth_cookie)
 

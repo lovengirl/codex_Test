@@ -2,16 +2,16 @@
 
 from typing import Annotated
 
-from email_validator import EmailNotValidError, validate_email
+from email_validator import EmailNotValidError
 from fastapi import APIRouter, Depends, Form, HTTPException, Path, Query, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
-from authentication import get_current_user
-from customer_queries import customer_page, visible_customer
-from database import get_session
+from authentication import get_current_user, normalize_email
+from customer_queries import MAX_SEARCH_LENGTH, customer_page, customer_version, visible_customer
+from database import DATABASE_BUSY_MESSAGE, get_session, is_database_busy
 from routers.auth import check_origin
 from templating import templates
 
@@ -37,38 +37,43 @@ def customer_input(name: Annotated[str, Form()] = "", email: Annotated[str, Form
     if values["grade"] not in GRADES:
         return values, "등급은 VIP, 일반, 신규 중에서 선택해 주세요."
     try:
-        values["email"] = validate_email(values["email"], check_deliverability=False).normalized.casefold()
+        values["email"] = normalize_email(values["email"])
     except EmailNotValidError:
         return values, "올바른 이메일을 입력해 주세요."
     return values, None
 
 
-def customer_form_page(request, user, values=None, *, customer_id=None, error=None, status_code=200):
+def customer_form_page(request, user, values=None, *, customer_id=None, version="", error=None, status_code=200):
+    headers = {"Cache-Control": "no-store"}
+    if status_code == 503:
+        headers["Retry-After"] = "1"
     return templates.TemplateResponse(
         request=request, name="customer_form.html", context={
             "user": user, "values": values or {}, "customer_id": customer_id,
-            "grades": GRADES, "error": error,
-        }, status_code=status_code, headers={"Cache-Control": "no-store"},
+            "grades": GRADES, "error": error, "version": version,
+        }, status_code=status_code, headers=headers,
     )
 
 
 def email_in_use(session, email, customer_id=0):
     # UNIQUE 제약과의 호환성을 위해 숨김 고객도 이메일 중복 검사에 포함한다.
     return session.execute(text(
-        "SELECT id FROM customer WHERE lower(email) = :email AND id != :id LIMIT 1"
+        "SELECT id FROM customer WHERE casefold(email) = :email AND id != :id LIMIT 1"
     ), {"email": email, "id": customer_id}).first() is not None
 
 
 @router.get("")
 def customers(request: Request, page: int = Query(default=1, ge=1, le=(2**63 - 1) // 20),
-              q: str = Query(default=""),
+              q: str = Query(default="", max_length=MAX_SEARCH_LENGTH),
               grade: str = Query(default=""), region: str = Query(default=""),
               user=Depends(get_current_user), session: Session = Depends(get_session)):
     result = customer_page(session, page, q, grade, region)
     if page > result["total_pages"]:
         raise HTTPException(status_code=404, detail="해당 고객 페이지가 없습니다.")
     return templates.TemplateResponse(
-        request=request, name="customers.html", context={"user": user, "grades": GRADES, **result},
+        request=request, name="customers.html", context={
+            "user": user, "grades": GRADES, "max_search_length": MAX_SEARCH_LENGTH, **result,
+        },
         headers={"Cache-Control": "no-store"},
     )
 
@@ -98,6 +103,13 @@ def create_customer(request: Request, form=Depends(customer_input),
     except IntegrityError:
         session.rollback()
         return customer_form_page(request, user, values, error="이미 등록된 이메일입니다.", status_code=409)
+    except OperationalError as error:
+        session.rollback()
+        if not is_database_busy(error):
+            raise
+        return customer_form_page(request, user, values,
+                                  error=DATABASE_BUSY_MESSAGE,
+                                  status_code=503)
     return RedirectResponse(f"/customers/{customer_id}", status_code=303)
 
 
@@ -123,25 +135,31 @@ def customer_detail(request: Request, customer_id: CustomerId, user=Depends(get_
 def edit_customer_page(request: Request, customer_id: CustomerId, user=Depends(get_current_user),
                        session: Session = Depends(get_session)):
     item = require_customer(session, customer_id)
-    return customer_form_page(request, user, item, customer_id=customer_id)
+    return customer_form_page(request, user, item, customer_id=customer_id, version=customer_version(item))
 
 
 @router.post("/{customer_id}/edit")
 def update_customer(request: Request, customer_id: CustomerId, form=Depends(customer_input),
+                    version: Annotated[str, Form()] = "",
                     user=Depends(get_current_user), session: Session = Depends(get_session)):
     values, error = form
     try:
         # 숨김 삭제와 수정을 직렬화해 숨김 처리된 고객의 수정을 막는다.
         session.rollback()
         session.execute(text("BEGIN IMMEDIATE"))
-        require_customer(session, customer_id)
+        item = require_customer(session, customer_id)
+        if version != customer_version(item):
+            session.rollback()
+            return customer_form_page(request, user, values, customer_id=customer_id, version=version,
+                                      error="고객 정보가 변경되었거나 수정 화면이 만료되었습니다. 최신 정보를 다시 불러와 주세요.",
+                                      status_code=409)
         if error:
             session.rollback()
-            return customer_form_page(request, user, values, customer_id=customer_id,
+            return customer_form_page(request, user, values, customer_id=customer_id, version=version,
                                       error=error, status_code=422)
         if email_in_use(session, values["email"], customer_id):
             session.rollback()
-            return customer_form_page(request, user, values, customer_id=customer_id,
+            return customer_form_page(request, user, values, customer_id=customer_id, version=version,
                                       error="이미 등록된 이메일입니다.", status_code=409)
         session.execute(text(
             "UPDATE customer SET name=:name, email=:email, address=:address, grade=:grade WHERE id=:id"
@@ -149,16 +167,31 @@ def update_customer(request: Request, customer_id: CustomerId, form=Depends(cust
         session.commit()
     except IntegrityError:
         session.rollback()
-        return customer_form_page(request, user, values, customer_id=customer_id,
+        return customer_form_page(request, user, values, customer_id=customer_id, version=version,
                                   error="이미 등록된 이메일입니다.", status_code=409)
+    except OperationalError as error:
+        session.rollback()
+        if not is_database_busy(error):
+            raise
+        return customer_form_page(request, user, values, customer_id=customer_id, version=version,
+                                  error=DATABASE_BUSY_MESSAGE,
+                                  status_code=503)
     return RedirectResponse(f"/customers/{customer_id}", status_code=303)
 
 
 @router.post("/{customer_id}/delete")
 def delete_customer(customer_id: CustomerId, session: Session = Depends(get_session)):
-    session.rollback()
-    session.execute(text("BEGIN IMMEDIATE"))
-    require_customer(session, customer_id)
-    session.execute(text("INSERT INTO hidden_customer (customer_id) VALUES (:id)"), {"id": customer_id})
-    session.commit()
+    try:
+        session.rollback()
+        session.execute(text("BEGIN IMMEDIATE"))
+        require_customer(session, customer_id)
+        session.execute(text("INSERT INTO hidden_customer (customer_id) VALUES (:id)"), {"id": customer_id})
+        session.commit()
+    except OperationalError as error:
+        session.rollback()
+        if not is_database_busy(error):
+            raise
+        raise HTTPException(status_code=503,
+                            detail=DATABASE_BUSY_MESSAGE,
+                            headers={"Retry-After": "1", "Cache-Control": "no-store"}) from None
     return RedirectResponse("/customers", status_code=303)

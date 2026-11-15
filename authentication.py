@@ -7,6 +7,7 @@ import secrets
 import tempfile
 from typing import Annotated
 
+from email_validator import validate_email
 from fastapi import Depends, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 import jwt
@@ -19,6 +20,11 @@ COOKIE_NAME = "access_token"
 TOKEN_SECONDS = 60 * 60
 REFRESH_SECONDS = 5 * 60
 ALGORITHM = "HS256"
+
+
+def normalize_email(value: str) -> str:
+    """가입·로그인·고객 입력에 동일한 이메일 정규화를 적용한다."""
+    return validate_email(value.strip(), check_deliverability=False).normalized.casefold()
 
 
 class AuthenticationRequired(Exception):

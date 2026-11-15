@@ -13,6 +13,7 @@ from models import SCHEMA
 
 
 DEFAULT_DB_PATH = Path(__file__).resolve().with_name("customer.db")
+DATABASE_BUSY_MESSAGE = "다른 작업이 데이터베이스를 사용 중입니다. 잠시 후 다시 시도해 주세요."
 
 
 def compact_name(value):
@@ -24,6 +25,12 @@ def address_region(value):
     """주소의 첫 시·도 항목을 지역으로 사용한다."""
     parts = value.split(maxsplit=1)
     return parts[0] if parts else ""
+
+
+def is_database_busy(error):
+    """SQLite 확장 오류 코드를 포함해 재시도 가능한 잠금 오류를 식별한다."""
+    code = getattr(error.orig, "sqlite_errorcode", 0)
+    return code & 0xFF in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
 
 
 def connect(db_path=DEFAULT_DB_PATH, *, check_same_thread=True):

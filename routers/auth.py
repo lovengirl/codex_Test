@@ -4,15 +4,15 @@ from typing import Annotated
 from urllib.parse import urlsplit
 
 import bcrypt
-from email_validator import EmailNotValidError, validate_email
+from email_validator import EmailNotValidError
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
-from authentication import clear_auth_cookie, get_optional_user, set_auth_cookie
-from database import get_session
+from authentication import clear_auth_cookie, get_optional_user, normalize_email, set_auth_cookie
+from database import DATABASE_BUSY_MESSAGE, get_session, is_database_busy
 from templating import templates
 
 LOGIN_ERROR = "이메일 또는 비밀번호를 확인해 주세요."
@@ -55,7 +55,7 @@ def register(request: Request, session: Annotated[Session, Depends(get_session)]
              user=Depends(get_optional_user)):
     name, address = name.strip(), address.strip()
     try:
-        email = validate_email(email.strip(), check_deliverability=False).normalized.casefold()
+        email = normalize_email(email)
     except EmailNotValidError:
         return auth_page(request, "register", user=user,
                          error="올바른 이메일을 입력해 주세요.", status_code=422)
@@ -68,7 +68,7 @@ def register(request: Request, session: Annotated[Session, Depends(get_session)]
         # 기존 이메일의 대소문자를 고려하고 동시 가입도 직렬화한다.
         session.rollback()
         session.execute(text("BEGIN IMMEDIATE"))
-        exists = session.execute(text("SELECT id FROM employees WHERE lower(email) = :email"),
+        exists = session.execute(text("SELECT id FROM employees WHERE casefold(email) = :email"),
                                  {"email": email}).first()
         if exists:
             session.rollback()
@@ -83,6 +83,15 @@ def register(request: Request, session: Annotated[Session, Depends(get_session)]
         session.rollback()
         return auth_page(request, "register", user=user,
                          error="이미 가입된 이메일입니다.", status_code=409)
+    except OperationalError as error:
+        session.rollback()
+        if not is_database_busy(error):
+            raise
+        response = auth_page(request, "register", user=user,
+                             error=DATABASE_BUSY_MESSAGE,
+                             status_code=503)
+        response.headers["Retry-After"] = "1"
+        return response
     return RedirectResponse("/auth/login?registered=true", status_code=303)
 
 
@@ -90,9 +99,13 @@ def register(request: Request, session: Annotated[Session, Depends(get_session)]
 def login(request: Request, session: Annotated[Session, Depends(get_session)],
           email: Annotated[str, Form()] = "", password: Annotated[str, Form()] = "",
           user=Depends(get_optional_user)):
+    try:
+        email = normalize_email(email)
+    except EmailNotValidError:
+        email = ""
     employee = session.execute(text(
-        "SELECT id, password_hash FROM employees WHERE lower(email) = :email"
-    ), {"email": email.strip().casefold()}).mappings().first()
+        "SELECT id, password_hash FROM employees WHERE casefold(email) = :email"
+    ), {"email": email}).mappings().first()
     stored_hash = employee["password_hash"] if employee else None
     password_bytes = password.encode("utf-8")
     valid_length = 1 <= len(password_bytes) <= 72

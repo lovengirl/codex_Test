@@ -6,7 +6,7 @@
 <form class="customer-search" method="get" action="/customers" role="search">
   <div class="customer-search-query">
     <label for="customer-search">이름 또는 이메일 검색</label>
-    <input id="customer-search" type="search" name="q" value="{{ q }}" placeholder="이름 또는 이메일 입력">
+    <input id="customer-search" type="search" name="q" value="{{ q }}" maxlength="{{ max_search_length }}" placeholder="이름 또는 이메일 입력">
   </div>
   <label>등급
     <select name="grade">
