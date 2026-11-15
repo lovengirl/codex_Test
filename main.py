@@ -23,7 +23,7 @@ def create_app(db_path: Path = DEFAULT_DB_PATH) -> FastAPI:
         finally:
             app.state.engine.dispose()
 
-    app = FastAPI(title="Customer Manager", version="0.2.0", lifespan=lifespan,
+    app = FastAPI(title="Customer Manager", version="1.0.0", lifespan=lifespan,
                   docs_url=None, redoc_url=None)
     app.add_exception_handler(AuthenticationRequired, authentication_required_response)
     app.middleware("http")(refresh_auth_cookie)

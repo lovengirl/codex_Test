@@ -2,6 +2,8 @@
 
 Python, FastAPI, SQLAlchemy로 만드는 고객관리 웹 서비스입니다. S1부터 S5까지 기존 코드를 이어서 확장합니다.
 
+현재 정식 버전은 **v1.0.0**입니다. [릴리즈 변경 이력](CHANGELOG.md)과 [공용 DB 준비 안내](docs/DATABASE_SETUP.md)를 확인하세요.
+
 ## 현재 구현 범위
 
 | 기능 | 상태 |
@@ -37,7 +39,10 @@ Python, FastAPI, SQLAlchemy로 만드는 고객관리 웹 서비스입니다. S1
 인증서 생성에는 OpenSSL이 필요합니다. PATH 또는 Git for Windows 기본 설치 경로에서 찾습니다.
 
 ```powershell
+git clone --branch v1.0.0 https://github.com/lovengirl/codex_Test.git
+cd codex_Test
 python -m pip install -r requirements.txt
+python database.py
 python scripts/create_dev_cert.py
 python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000 --ssl-keyfile .certs/localhost.key --ssl-certfile .certs/localhost.crt
 ```
@@ -114,6 +119,8 @@ API 호출·SQL 처리 오류는 예외 타입과 메시지를 화면과 콘솔�
 
 ## 데이터베이스
 
+처음 실행하거나 기존 DB를 준비하는 절차는 [공용 DB 준비 안내](docs/DATABASE_SETUP.md)를 따릅니다.
+
 - `models.py`의 `SCHEMA`와 `database.py`를 재사용합니다.
 - 기존 `customer.db`는 프로젝트 루트에 두면 그대로 사용합니다. Git에는 고객 데이터를 올리지 않습니다.
 - 새로 복제한 환경에 DB가 없으면 앱 시작 시 빈 DB와 테이블을 생성합니다. 기존 고객 데이터는 포함되어 있지 않습니다.
@@ -124,6 +131,9 @@ API 호출·SQL 처리 오류는 예외 타입과 메시지를 화면과 콘솔�
 - `model.py`는 실제 DB와 구조가 다른 별도 기존 모델로, 현재 앱에서는 사용하지 않습니다.
 
 ## 테스트
+
+브라우저 테스트를 처음 실행하기 전에 `python -m playwright install chromium`으로 테스트 브라우저를 설치합니다.
+Windows에서는 한글 PDF에 맑은 고딕을 사용하며, Linux에서는 나눔고딕이 필요합니다.
 
 ```powershell
 # 함수 단위: 가장 많은 사례, HTTP·외부 API 호출 없음
@@ -247,3 +257,30 @@ customer-manager/
 - 변경은 의미 단위로 나눠 커밋합니다. 예: `docs : 프로젝트 README 추가`.
 - DB, 인증서·개인키, 비밀 설정, 캐시, 로그는 커밋하지 않습니다.
 - 세부 규칙은 [AGENTS.md](AGENTS.md)를 따릅니다.
+
+## Export 사용법
+
+로그인 후 `/dashboard` 상단 다운로드 영역에서 **CSV 다운로드**, **Excel 다운로드**, **PDF 다운로드**를 선택합니다.
+다운로드 시점의 주요 지표 4종과 월별 매출을 한 보고서에 담습니다. 숨김 고객과 취소 주문은 매출에서 제외합니다.
+
+| 형식 | 경로 | 특징 |
+| --- | --- | --- |
+| CSV | `/dashboard/export/csv` | UTF-8 BOM, Excel 한글 표시와 수식 문자열 보호 |
+| Excel | `/dashboard/export/xlsx` | `.xlsx`, 숫자 셀·서식·필터 |
+| PDF | `/dashboard/export/pdf` | 한글 글꼴 포함, 여러 페이지 표·머리글 |
+
+로그인이 필요하며 데이터가 없을 때도 보고서를 다운로드할 수 있습니다.
+
+## 버전 및 릴리즈 규칙
+
+SemVer의 `MAJOR.MINOR.PATCH`를 사용합니다.
+
+- 기존 사용 방식과 호환되는 기능 추가는 **MINOR**를 올립니다. 예: `1.0.0` → `1.1.0`.
+- 기존 사용 방식과 호환되는 버그 수정은 **PATCH**를 올립니다. 예: `1.0.0` → `1.0.1`.
+- 호환되지 않는 API·동작 변경은 **MAJOR**를 올립니다. 예: `1.0.0` → `2.0.0`.
+- 기능과 버그 수정이 함께 있으면 MINOR를 올리고 PATCH는 0으로 시작합니다.
+- 릴리즈마다 앱 버전과 `CHANGELOG.md`를 갱신하고 검증된 커밋에 annotated tag `vX.Y.Z`를 붙여 GitHub Release를 생성합니다.
+- 배포한 태그는 이동하거나 덮어쓰지 않습니다. 변경 사항은 다음 버전으로 배포합니다.
+
+v1.0.0의 검증 결과는 전체 639개 통과, 라인·분기 통합 Coverage 97.67%입니다.
+상세 측정 범위와 미검증 영역은 [Coverage 보고서](docs/COVERAGE.md)에 기록합니다.
