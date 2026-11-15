@@ -1,12 +1,15 @@
 """DB 집계로 표시하는 직원 전용 매출 대시보드."""
 
-from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import Response
-from typing import Literal
+from fastapi import APIRouter, Body, Depends, Form, HTTPException, Request
+from fastapi.responses import JSONResponse, Response
+from typing import Annotated, Literal
+import jwt
 from sqlalchemy import column, func, select, table, text
 from sqlalchemy.orm import Session
 
 from authentication import get_current_user
+from authentication import COOKIE_NAME
+from ai_insight import generate_insight, make_snapshot, read_snapshot
 from customer_queries import visible_customers
 from database import get_session
 from dashboard_exports import CONTENT_TYPES, dashboard_report
@@ -16,6 +19,8 @@ from templating import templates
 
 router = APIRouter(prefix="/dashboard", tags=["대시보드"],
                    dependencies=[Depends(get_current_user), Depends(check_origin)])
+# Insight는 이미 인증된 화면의 서명된 집계를 사용해 DB 재조회 없이 생성한다.
+insight_router = APIRouter(prefix="/dashboard", tags=["대시보드"], dependencies=[Depends(check_origin)])
 orders = table("orders", column("customer_id"), column("total_amount"),
                column("order_date"), column("status"))
 
@@ -45,10 +50,12 @@ def dashboard_data(session):
 
 
 def dashboard_page(request, user, session, question_result=None):
+    data = dashboard_data(session)
+    snapshot = make_snapshot(data["metrics"], user["id"], getattr(request.app.state, "jwt_secret", None))
     return templates.TemplateResponse(
         request=request, name="dashboard.html",
         context={"user": user, "model": MODEL, "question_result": question_result,
-                 **dashboard_data(session)},
+                 "insight_snapshot": snapshot, **data},
         headers={"Cache-Control": "no-store"},
     )
 
@@ -75,3 +82,15 @@ def export_dashboard(file_format: Literal["csv", "xlsx", "pdf"],
         "Cache-Control": "no-store",
         "X-Content-Type-Options": "nosniff",
     })
+
+
+@insight_router.post("/insight")
+async def dashboard_insight(request: Request, snapshot: Annotated[str, Body(embed=True, max_length=8000)]):
+    try:
+        facts = read_snapshot(snapshot, request.cookies.get(COOKIE_NAME), request.app.state.jwt_secret)
+    except (jwt.InvalidTokenError, ValueError, TypeError):
+        raise HTTPException(status_code=401, detail="유효한 로그인과 집계 데이터가 필요합니다.")
+    sentences = await generate_insight(facts)
+    if sentences is None:
+        return Response(status_code=204, headers={"Cache-Control": "no-store"})
+    return JSONResponse({"sentences": sentences}, headers={"Cache-Control": "no-store"})

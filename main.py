@@ -33,6 +33,7 @@ def create_app(db_path: Path = DEFAULT_DB_PATH) -> FastAPI:
     app.include_router(auth.router)
     app.include_router(customers.router)
     app.include_router(dashboard.router)
+    app.include_router(dashboard.insight_router)
 
     return app
 
