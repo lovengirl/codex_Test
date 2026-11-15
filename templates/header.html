@@ -1,14 +1,14 @@
-<header style="display:flex;align-items:center;gap:20px;padding:18px 24px;border-bottom:1px solid #dce3e9;background:#fff;color:#182938;font:16px system-ui,sans-serif;flex-wrap:wrap">
-  <a href="/" style="color:inherit;text-decoration:none;font-weight:700">Customer Manager</a>
-  <nav aria-label="주 메뉴" style="display:flex;gap:16px">
-    <a href="/customers">고객</a>
-    <a href="/dashboard">대시보드</a>
+{% set current_path = request.url.path %}
+<header class="site-header">
+  <nav aria-label="주 메뉴" class="site-links">
+    <a href="/"{% if current_path == '/' %} aria-current="page"{% endif %}>홈</a>
+    <a href="/customers"{% if current_path == '/customers' or current_path.startswith('/customers/') %} aria-current="page"{% endif %}>고객 목록</a>
   </nav>
-  <div style="margin-left:auto;display:flex;gap:16px;align-items:center">
+  <div class="site-account">
     {% if user %}
     <span>{{ user.name }}님 안녕하세요</span>
-    <form action="/auth/logout" method="post" style="margin:0">
-      <button type="submit" style="padding:8px 12px;cursor:pointer">로그아웃</button>
+    <form action="/auth/logout" method="post">
+      <button type="submit">로그아웃</button>
     </form>
     {% else %}
     <a href="/auth/login">로그인</a>

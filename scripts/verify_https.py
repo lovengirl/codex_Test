@@ -168,7 +168,18 @@ def verify_authentication(context, report, db_path, base_url):
             page = client.get(path)
             assert page.status_code == 200
             assert "인증검증직원님 안녕하세요" in page.text and "로그아웃" in page.text
+            assert page.text.count('<header class="site-header">') == 1
+            header = page.text.partition('<header class="site-header">')[2].partition("</header>")[0]
+            assert "홈</a>" in header and "고객 목록</a>" in header
+            if path in ("/", "/customers"):
+                assert f'href="{path}" aria-current="page"' in header
+            else:
+                assert 'aria-current="page"' not in header
+            if path == "/":
+                assert "인증검증직원님, 환영합니다." in page.text
+                assert "고객 목록 바로가기" in page.text
         report("[통과] 페이지 이동 후 인증 유지 및 모든 HTML 페이지의 이름·로그아웃 표시")
+        report("[통과] 모든 HTML 페이지의 공통 내비게이션·현재 메뉴 활성 표시·로그인 홈 인사와 목록 바로가기")
         verify_customer_crud(client, db_path, account["email"], report)
         verify_customer_pagination(client, db_path, report)
         logout = client.post("/auth/logout")
@@ -177,6 +188,11 @@ def verify_authentication(context, report, db_path, base_url):
         assert "access_token" not in client.cookies
         assert client.get("/customers").status_code == 401
         assert client.get("/auth/login").status_code == 200
+        home = client.get("/")
+        assert home.status_code == 200 and "로그인해 주세요" in home.text
+        assert "인증검증직원" not in home.text
+        assert 'action="/auth/logout"' not in home.text
+        report("[통과] 로그아웃 후 홈 로그인 유도 및 공통 헤더 로그인 링크")
         report("[통과] 로그아웃 쿠키 삭제·로그인 화면 이동·보호 라우트 접근 차단")
 
 

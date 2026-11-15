@@ -1,9 +1,15 @@
 {% extends "base.html" %}
+{% block title %}홈 · Customer Manager{% endblock %}
 {% block content %}
+{% if user %}
+<h1>{{ user.name }}님, 환영합니다.</h1>
+<p><a href="/customers">고객 목록 바로가기</a></p>
+{% else %}
 <h1>Customer Manager</h1>
-<p>고객관리 서비스</p>
+<p>고객 관리를 시작하려면 로그인해 주세요.</p>
+<p><a href="/auth/login">로그인하기</a></p>
+{% endif %}
 <ul>
-  <li><a href="/customers">고객 관리</a></li>
   <li><a href="/docs">API 문서</a></li>
   <li><a href="/health">서비스 및 데이터베이스 상태</a></li>
 </ul>

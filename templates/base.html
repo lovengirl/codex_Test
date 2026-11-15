@@ -17,11 +17,21 @@
     .submit { padding: 12px; border: 0; border-radius: 5px; background: #175b97; color: white; font: inherit; cursor: pointer; }
     .error { color: #a51924; }
     .success { color: #24683e; }
+    .site-header { display: flex; align-items: center; flex-wrap: wrap; gap: 16px 24px; padding: 16px 24px; border-bottom: 1px solid #dce3e9; background: white; font: 16px/1.6 system-ui, sans-serif; }
+    .site-links { display: flex; align-items: center; gap: 8px; }
+    .site-links a { padding: 8px 12px; border-bottom: 3px solid transparent; text-decoration: none; }
+    .site-links a[aria-current="page"] { color: #123f68; background: #eaf2fa; border-bottom-color: #175b97; font-weight: 700; }
+    .site-account { margin-left: auto; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+    .site-account span { overflow-wrap: anywhere; }
+    .site-account form { margin: 0; }
+    .site-account button { padding: 8px 12px; font: inherit; cursor: pointer; }
+    .documentation { max-width: 1440px; }
     :focus-visible { outline: 3px solid #dc9b22; outline-offset: 3px; }
   </style>
+  {% block extra_head %}{% endblock %}
 </head>
 <body>
   {% include "header.html" %}
-  <main>{% block content %}{% endblock %}</main>
+  <main class="{% block main_class %}{% endblock %}">{% block content %}{% endblock %}</main>
 </body>
 </html>
