@@ -1,6 +1,83 @@
 {% extends "base.html" %}
 {% block title %}대시보드 · Customer Manager{% endblock %}
+{% block extra_head %}
+<style>
+  .dashboard-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin: 24px 0; }
+  .dashboard-metrics div, .dashboard-chart { padding: 24px; background: white; border: 1px solid #dce3e9; border-radius: 12px; }
+  .dashboard-metrics dt { color: #667085; }
+  .dashboard-metrics dd { margin: 8px 0 0; font-size: clamp(20px, 2.5vw, 28px); font-weight: 700; overflow-wrap: anywhere; }
+  .dashboard-chart h2 { margin-top: 0; font-size: 20px; }
+  .dashboard-canvas { position: relative; height: 340px; }
+  .dashboard-chart table { width: 100%; margin-top: 16px; border-collapse: collapse; }
+  .dashboard-chart th, .dashboard-chart td { padding: 8px; border-bottom: 1px solid #dce3e9; text-align: right; }
+  .dashboard-chart th:first-child { text-align: left; }
+  @media (max-width: 800px) { .dashboard-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 400px) { .dashboard-metrics { grid-template-columns: 1fr; } }
+</style>
+{% endblock %}
 {% block content %}
 <h1>대시보드</h1>
-<p>인증된 직원 전용 페이지입니다.</p>
+<p>전체 기간 기준 · 숨김 고객 제외 · 주문 수와 매출은 취소 주문 제외 · 평균 주문금액은 원 단위 반올림</p>
+<dl class="dashboard-metrics" aria-label="주요 지표">
+  <div><dt>고객 수</dt><dd>{{ "{:,}".format(metrics.customer_count) }}명</dd></div>
+  <div><dt>주문 수</dt><dd>{{ "{:,}".format(metrics.order_count) }}건</dd></div>
+  <div><dt>총매출</dt><dd>{{ "{:,}".format(metrics.total_sales) }}원</dd></div>
+  <div><dt>평균 주문금액</dt><dd>{{ "{:,.0f}".format(metrics.average_order) }}원</dd></div>
+</dl>
+<section class="dashboard-chart" aria-labelledby="monthly-sales-title">
+  <h2 id="monthly-sales-title">월별 매출</h2>
+  {% if monthly_sales %}
+  <p>매출이 발생한 월을 연월순으로 표시합니다.</p>
+  <div class="dashboard-canvas">
+    <canvas id="monthly-sales-chart" role="img" aria-label="월별 매출 막대 차트. 아래 매출 표에서 월별 금액을 확인할 수 있습니다."></canvas>
+  </div>
+  <p id="chart-error" role="status" hidden>차트를 불러오지 못했습니다. 아래 매출 표를 확인해 주세요.</p>
+  <details>
+    <summary>월별 매출 표</summary>
+    <table>
+      <caption>월별 매출 금액 (원)</caption>
+      <thead><tr><th scope="col">연월</th><th scope="col">매출</th></tr></thead>
+      <tbody>
+        {% for item in monthly_sales %}
+        <tr><th scope="row">{{ item.month }}</th><td>{{ "{:,}".format(item.sales) }}원</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+  <script id="monthly-sales-data" type="application/json">{{ monthly_sales | tojson }}</script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js" defer></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      if (typeof Chart === 'undefined') {
+        document.getElementById('chart-error').hidden = false;
+        return;
+      }
+      const monthly = JSON.parse(document.getElementById('monthly-sales-data').textContent);
+      const won = new Intl.NumberFormat('ko-KR');
+      new Chart(document.getElementById('monthly-sales-chart'), {
+        type: 'bar',
+        data: {
+          labels: monthly.map(item => item.month),
+          datasets: [{ label: '매출 (원)', data: monthly.map(item => item.sales), backgroundColor: '#354785', borderRadius: 4 }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: { callbacks: { label: context => won.format(context.parsed.y) + '원' } }
+          },
+          scales: {
+            x: { title: { display: true, text: '연월' } },
+            y: { beginAtZero: true, title: { display: true, text: '매출 (원)' }, ticks: { callback: value => won.format(value) } }
+          }
+        }
+      });
+    });
+  </script>
+  {% else %}
+  <p>표시할 매출이 없습니다.</p>
+  {% endif %}
+</section>
 {% endblock %}
