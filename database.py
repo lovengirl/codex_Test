@@ -26,12 +26,16 @@ def create_tables(connection):
     """현재 연결에 테이블을 생성한다. 커밋은 호출자가 관리한다."""
     for statement in SCHEMA:
         connection.execute(statement)
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(employees)")}
+    if "password_hash" not in columns:
+        connection.execute("ALTER TABLE employees ADD COLUMN password_hash TEXT")
 
 
 def initialize_database(db_path=DEFAULT_DB_PATH):
-    """기존 스키마를 유지하며 없는 테이블만 생성한다."""
+    """기존 행·칼럼을 보존하며 테이블과 nullable 인증 칼럼을 준비한다."""
     with closing(connect(db_path)) as connection:
         with connection:
+            connection.execute("BEGIN IMMEDIATE")
             create_tables(connection)
 
 

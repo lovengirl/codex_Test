@@ -20,7 +20,8 @@ SCHEMA = (
         id INTEGER PRIMARY KEY,
         name TEXT NOT NULL,
         email TEXT NOT NULL UNIQUE,
-        address TEXT NOT NULL
+        address TEXT NOT NULL,
+        password_hash TEXT
     )""",
     """CREATE TABLE IF NOT EXISTS orders (
         id INTEGER PRIMARY KEY,
