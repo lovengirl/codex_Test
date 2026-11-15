@@ -38,11 +38,12 @@
   <p id="question-model">사용 모델 {{ model }} · 한국 날짜 기준 · 숨김 고객과 취소 주문 제외</p>
   <div class="question-result" aria-live="polite" aria-label="답변 및 결과">
     {% if question_result %}
-      {% if question_result.error %}
-      <pre class="error" role="alert">{{ question_result.error }}</pre>
-      {% else %}
+      {% if question_result.answer %}
       <h3>답변</h3>
       <p>{{ question_result.answer }}</p>
+      {% endif %}
+      {% if question_result.error %}
+      <pre class="error" role="alert">{{ question_result.error }}</pre>
       {% endif %}
       {% if question_result.explanation and question_result.explanation != question_result.answer %}
       <p>{{ question_result.explanation }}</p>

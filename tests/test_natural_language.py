@@ -199,12 +199,14 @@ def test_생성예외타입과_메시지를_화면과콘솔에표시(question_cl
     assert "TypeError: 실제 예외 <원문> 그대로" in caplog.text
 
 
-def test_SQL예외도_생성SQL과함께노출(question_client, monkeypatch, caplog):
+def test_SQL검증예외는화면에_거절SQL은콘솔에노출(question_client, monkeypatch, caplog):
     mock_model(monkeypatch, "SELECT 없는칼럼 FROM customer")
     response = question_client.post("/dashboard/ask", data={"question": "조회"})
     assert "OperationalError: no such column: 없는칼럼" in response.text
-    assert "SELECT 없는칼럼 FROM customer" in response.text
+    assert "SELECT 없는칼럼 FROM customer" not in response.text
+    assert "SELECT 없는칼럼 FROM customer" in caplog.text
     assert "OperationalError: no such column: 없는칼럼" in caplog.text
+    assert "이 데이터로는 답할 수 없습니다." in response.text
 
 
 def test_실제등록일없음은_다른날짜로대체하거나_0명으로위장하지않음(client, monkeypatch):
@@ -297,3 +299,79 @@ def test_스칼라NULL은_한국어로표시(question_client, monkeypatch):
     response = question_client.post("/dashboard/ask", data={"question": "조회"})
     assert "조회 결과는 값 없음입니다." in response.text
     assert "<td>값 없음</td>" in response.text
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT withdrawn_at FROM customer",
+    'SELECT "withdrawn_at" FROM customer',
+    "SELECT COUNT(*) FROM withdrawn_customer",
+    "SELECT c.id FROM customer c WHERE c.deleted_at IS NOT NULL",
+    "WITH withdrawn AS (SELECT withdrawn_at FROM customer) SELECT COUNT(*) FROM withdrawn",
+    "SELECT (SELECT MAX(ended_at) FROM orders) FROM customer LIMIT 1",
+])
+def test_가상칼럼과테이블은_데이터조회실행전에차단(query_connection, sql):
+    statements = []
+    query_connection.set_trace_callback(statements.append)
+    try:
+        with pytest.raises(nl.SchemaValidationError):
+            nl.execute_select(query_connection, sql)
+    finally:
+        query_connection.set_trace_callback(None)
+    assert sql not in statements
+    print(f"[통과] 가상 테이블·칼럼 사전 차단, 데이터 조회 미실행: {sql}")
+
+
+@pytest.mark.parametrize("sql,expected", [
+    ('SELECT c.id AS 고객번호 FROM customer c ORDER BY 고객번호 LIMIT 1', [(1,)]),
+    ('WITH x AS (SELECT id AS 고객번호 FROM customer) SELECT 고객번호 FROM x ORDER BY 고객번호 LIMIT 1', [(1,)]),
+    ('SELECT c.id FROM customer c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id=c.id) ORDER BY c.id LIMIT 1', [(1,)]),
+    ('SELECT c.id FROM customer c JOIN orders o ON o.customer_id=c.id GROUP BY c.id HAVING COUNT(*)>1', [(1,)]),
+])
+def test_스키마검증은_별칭_CTE_상관서브쿼리_집계오탐없이허용(query_connection, sql, expected):
+    assert nl.execute_select(query_connection, sql)["rows"] == expected
+
+
+def test_사전검증은_조회함수도실행하지않음(query_connection):
+    calls = []
+    query_connection.create_function("검증확인", 1, lambda value: calls.append(value) or value)
+    query_connection.set_authorizer(nl.select_authorizer)
+    try:
+        nl.validate_sql_schema(query_connection, "SELECT 검증확인(id) FROM customer")
+        assert calls == []
+    finally:
+        query_connection.set_authorizer(None)
+
+
+@pytest.mark.parametrize("sql", [None, "SELECT COUNT(*) FROM customer WHERE withdrawn_at IS NOT NULL"])
+def test_동일한탈퇴질문은_SQL대신_실제숨김고객대안을제시(question_client, monkeypatch, sql):
+    mock_model(monkeypatch, sql, "지원하지 않는 질문입니다.")
+    response = question_client.post("/dashboard/ask", data={"question": "2026년 탈퇴 고객수"})
+    result = response.context["question_result"]
+    assert result["answer"].startswith("이 데이터로는 답할 수 없습니다.")
+    assert "혹시 전체 기간의 숨김(hidden) 고객 수를 물으신 건가요?" in response.text
+    assert "지원하지 않는 질문" not in response.text
+    assert result["rows"] == []
+    assert result["sql"] == ""
+    assert "<h3>생성된 SQL</h3>" not in response.text
+    print("[통과] 2026년 탈퇴 고객수 → 실제 숨김 고객 개념 확인 질문, SQL 미실행")
+
+
+def test_대안으로숨김고객수를질문하면_숨김원본에서집계(question_client, monkeypatch):
+    mock_model(monkeypatch, "SELECT COUNT(*) AS 숨김고객수 FROM hidden_customer")
+    response = question_client.post("/dashboard/ask", data={"question": "전체 숨김 고객 수"})
+    assert response.context["question_result"]["rows"] == [(1,)]
+    assert "조회 결과는 1입니다." in response.text
+
+
+def test_등록일없는신규고객질문은_전체고객수대안표시(client, monkeypatch):
+    mock_model(monkeypatch, None, "고객 등록일 칼럼이 실제 DB에 없습니다.")
+    result = nl.ask_database(database_path(client), "2026년 신규 고객수")
+    assert result["answer"].startswith("이 데이터로는 답할 수 없습니다.")
+    assert "혹시 등록일 조건을 제외한 전체 고객 수를 물으신 건가요?" in result["answer"]
+
+
+def test_숨김테이블이없으면_숨김대안을상상하지않음():
+    schema = [{"name": "customer", "columns": [{"name": "id"}]}]
+    answer = nl.unavailable_answer("탈퇴 고객수", schema, "탈퇴 기록이 없습니다.")
+    assert "숨김" not in answer
+    assert "전체 고객 수" in answer

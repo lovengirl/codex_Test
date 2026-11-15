@@ -32,6 +32,10 @@ SQL_TOKENS = re.compile(
 )
 
 
+class SchemaValidationError(ValueError):
+    """생성 SQL의 테이블·칼럼이 실제 SQLite 스키마와 일치하지 않는다."""
+
+
 def actual_schema(connection):
     """매 요청마다 모든 테이블·뷰와 생성 칼럼까지 실제 DB에서 조회한다."""
     schema = []
@@ -91,9 +95,19 @@ def generate_sql(question, schema):
     system = (
         "당신은 SQLite 조회 SQL을 작성하는 한국어 데이터 분석가입니다. "
         "반드시 JSON 객체만 출력하세요. 설명문, 마크다운, 백틱을 JSON 밖에 쓰지 마세요. "
-        '형식은 {"sql": "SELECT ...", "explanation": "한국어 집계 기준"}입니다. '
+        '형식은 {"sql": "SELECT ...", "explanation": "한국어 집계 기준", "suggestion": ""}입니다. '
         "SQL은 단 하나의 SELECT 또는 SELECT로 끝나는 WITH 문이어야 합니다. "
         "아래 런타임 스키마의 실제 테이블과 칼럼만 사용하고 없는 칼럼을 상상하지 마세요. "
+        "사용자 질문에 나온 개념이나 기간 조건에 필요한 실제 칼럼이 없으면 sql을 null로 반환하세요. "
+        "explanation에는 필요한 개념과 실제 스키마 사이의 차이를 한국어로 설명하고, "
+        "suggestion에는 실제 데이터로 답할 수 있는 가장 관련 있는 대안 질문의 주제를 명사구로 쓰세요. "
+        "'지원하지 않는 질문'이라는 일반 거절로 끝내지 마세요. "
+        "hidden_customer는 고객 숨김 상태를 기록합니다. 탈퇴 기록이나 탈퇴일을 추정하지 마세요. "
+        "탈퇴·해지 질문의 기록이 없고 hidden_customer가 존재하면 "
+        "sql=null과 suggestion='전체 기간의 숨김(hidden) 고객 수'로 확인 질문을 제안하세요. "
+        "숨김 날짜 칼럼이 없으면 숨김 고객을 연도나 월로 나누지 마세요. "
+        "사용자가 숨김 고객 수 자체를 질문하면 hidden_customer에서 집계하세요. "
+        "customer는 숨김 고객이 제외된 뷰이므로 숨김 수 집계에 customer를 조인하면 안 됩니다. "
         "결과 칼럼 별칭과 explanation은 한국어로 작성하세요. 숫자 결과를 예측하지 마세요. "
         "고객 수는 customer, 주문일은 orders.order_date, 주문 금액은 orders.total_amount를 사용하세요. "
         "customer와 orders는 숨김 고객을 제외하는 읽기 뷰이며 orders는 취소 주문도 제외합니다. "
@@ -101,7 +115,8 @@ def generate_sql(question, schema):
         "기간은 한국 날짜를 기준으로 시작 이상, 다음 기간 시작 미만으로 비교하세요. "
         "'신규 고객수'는 해당 기간에 등록된 고객 수입니다. 등록일 칼럼이 실제로 있으면 사용하세요. "
         "등록일이 없다면 주문일이나 grade를 등록일로 대체하지 말고 "
-        '{"sql": null, "explanation": "고객 등록일 칼럼이 실제 DB에 없어 기간별 신규 고객 수를 계산할 수 없습니다."}를 반환하세요. '
+        '{"sql": null, "explanation": "고객 등록일 칼럼이 실제 DB에 없어 기간별 신규 고객 수를 계산할 수 없습니다.", '
+        '"suggestion": "등록일 조건을 제외한 전체 고객 수"}를 반환하세요. '
         "개별 데이터 조회는 최대 200행으로 제한하세요. "
         f"오늘의 한국 날짜는 {today}입니다. 다음 JSON은 실제 DB에서 조회한 전체 스키마입니다.\n"
         + json.dumps(schema, ensure_ascii=False)
@@ -160,6 +175,36 @@ def select_authorizer(action, first, second, database, source):
     return sqlite3.SQLITE_OK if action in allowed else sqlite3.SQLITE_DENY
 
 
+def validate_sql_schema(connection, sql):
+    """실제 스키마로 이름을 해석한다. 원래 SELECT의 데이터 조회는 실행하지 않는다.
+
+    SQLite의 컴파일러로 검증하여 별칭·CTE·상관 서브쿼리와 실제 칼럼을 구분한다.
+    EXPLAIN 결과 형식에 의존하지 않고 컴파일 성공 여부만 확인한다.
+    """
+    # SQLite가 없는 "칼럼명"을 문자열 리터럴로 받아들이는 호환 모드를 해제한다.
+    connection.setconfig(sqlite3.SQLITE_DBCONFIG_DQS_DML, False)
+    try:
+        connection.execute("EXPLAIN " + sql).close()
+    except sqlite3.OperationalError as error:
+        if str(error).startswith(("no such table:", "no such column:", "ambiguous column name:")):
+            raise SchemaValidationError(f"{type(error).__name__}: {error}") from error
+        raise
+
+
+def unavailable_answer(question, schema, explanation, suggestion=""):
+    """사용 가능한 실제 개념을 확인하는 질문으로 응답한다. 대안 SQL은 자동 실행하지 않는다."""
+    columns = {item["name"]: {entry["name"] for entry in item["columns"]} for item in schema}
+    if any(word in question for word in ("탈퇴", "해지")) and "customer_id" in columns.get("hidden_customer", set()):
+        suggestion = "전체 기간의 숨김(hidden) 고객 수"
+    if not suggestion and "id" in columns.get("customer", set()):
+        suggestion = "등록일 조건을 제외한 전체 고객 수"
+    if not suggestion:
+        suggestion = "현재 DB에 기록된 항목의 조회"
+    if "지원하지 않" in explanation:
+        explanation = "질문의 개념을 직접 기록한 테이블·칼럼이 확인되지 않습니다."
+    return f"이 데이터로는 답할 수 없습니다. {explanation} 혹시 {suggestion.strip().rstrip('?.')}를 물으신 건가요?"
+
+
 def execute_select(connection, sql):
     normalized = normalize_select(sql)
     connection.execute("PRAGMA query_only = ON")
@@ -167,6 +212,7 @@ def execute_select(connection, sql):
     connection.set_progress_handler(lambda: int(monotonic() >= deadline), 1000)
     connection.set_authorizer(select_authorizer)
     try:
+        validate_sql_schema(connection, normalized)
         cursor = connection.execute(normalized)
         rows = cursor.fetchmany(MAX_ROWS + 1)
         columns = [item[0] for item in cursor.description]
@@ -193,7 +239,11 @@ def ask_database(db_path, question):
                 raise ValueError("모델 JSON의 explanation 항목은 한국어 문자열이어야 합니다.")
             result["explanation"] = explanation
             if generated.get("sql") is None:
-                result["answer"] = explanation
+                suggestion = generated.get("suggestion", "")
+                if not isinstance(suggestion, str):
+                    raise ValueError("모델 JSON의 suggestion 항목은 한국어 문자열이어야 합니다.")
+                result["answer"] = unavailable_answer(question, schema, explanation, suggestion)
+                result["explanation"] = ""
                 return result
             prepare_visible_views(connection, schema)
             result.update(execute_select(connection, result["sql"]))
@@ -206,6 +256,14 @@ def ask_database(db_path, question):
             result["answer"] = f"조회 결과는 {formatted}입니다."
         else:
             result["answer"] = f"조회 결과 {len(rows):,}개 행을 표시합니다."
+    except SchemaValidationError as error:
+        result["error"] = f"{type(error).__name__}: {error}"
+        logger.exception("실제 스키마 사전 검증 예외: %s, 생성 SQL: %s", result["error"], result["sql"])
+        result["sql"] = ""
+        result["explanation"] = ""
+        result["answer"] = unavailable_answer(
+            question, schema, "생성된 SQL의 테이블·칼럼이 실제 스키마와 일치하지 않습니다.",
+        )
     except Exception as error:
         result["error"] = f"{type(error).__name__}: {error}"
         logger.exception("자연어 질문 처리 예외: %s", result["error"])
