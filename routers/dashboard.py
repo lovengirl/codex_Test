@@ -1,12 +1,15 @@
 """DB 집계로 표시하는 직원 전용 매출 대시보드."""
 
 from fastapi import APIRouter, Depends, Form, Request
+from fastapi.responses import Response
+from typing import Literal
 from sqlalchemy import column, func, select, table, text
 from sqlalchemy.orm import Session
 
 from authentication import get_current_user
 from customer_queries import visible_customers
 from database import get_session
+from dashboard_exports import CONTENT_TYPES, dashboard_report
 from natural_language import MODEL, ask_database
 from routers.auth import check_origin
 from templating import templates
@@ -61,3 +64,14 @@ def ask(request: Request, question: str = Form(""), user=Depends(get_current_use
     db_path = session.execute(text("PRAGMA database_list")).mappings().first()["file"]
     result = ask_database(db_path, question)
     return dashboard_page(request, user, session, result)
+
+
+@router.get("/export/{file_format}")
+def export_dashboard(file_format: Literal["csv", "xlsx", "pdf"],
+                     session: Session = Depends(get_session)):
+    content = dashboard_report(dashboard_data(session), file_format)
+    return Response(content=content, media_type=CONTENT_TYPES[file_format], headers={
+        "Content-Disposition": f'attachment; filename="dashboard-report.{file_format}"',
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+    })

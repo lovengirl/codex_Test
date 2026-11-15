@@ -1,13 +1,18 @@
 """임시 DB에서 대시보드 집계·차트 데이터·응답 시간을 검증한다."""
 
 import json
+import csv
+from io import BytesIO, StringIO
 import re
 from time import perf_counter
 
 import pytest
+from openpyxl import load_workbook
+from pypdf import PdfReader
 from sqlalchemy import event, text
 
 from authentication import COOKIE_NAME, create_token
+from dashboard_exports import dashboard_report
 
 
 @pytest.fixture
@@ -166,3 +171,112 @@ def test_대시보드_인증필수(client):
     response = client.get('/dashboard', headers={'Accept': 'text/html'}, follow_redirects=False)
     assert response.status_code == 303
     assert response.headers['location'].startswith('/auth/login')
+
+
+def test_다운로드영역에_CSV_Excel_PDF버튼표시(dashboard_client):
+    response = dashboard_client.get('/dashboard')
+    assert '보고서 다운로드' in response.text
+    for extension, label in [('csv', 'CSV'), ('xlsx', 'Excel'), ('pdf', 'PDF')]:
+        assert f'href="/dashboard/export/{extension}">{label} 다운로드</a>' in response.text
+    assert response.text.index('보고서 다운로드') < response.text.index('name="question"')
+
+
+@pytest.mark.parametrize('extension,content_type', [
+    ('csv', 'text/csv'),
+    ('xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
+    ('pdf', 'application/pdf'),
+])
+def test_다운로드_실제파일형식과_숨김취소제외_집계값일치(dashboard_client, extension, content_type):
+    client = dashboard_client
+    seed_sales(client)
+    response = client.get(f'/dashboard/export/{extension}')
+    assert response.status_code == 200
+    assert response.headers['content-type'].startswith(content_type)
+    assert response.headers['content-disposition'] == f'attachment; filename="dashboard-report.{extension}"'
+    assert response.headers['cache-control'] == 'no-store'
+    if extension == 'csv':
+        assert response.content.startswith(b'\xef\xbb\xbf')
+        rows = list(csv.reader(StringIO(response.content.decode('utf-8-sig'))))
+        assert rows == [
+            ['구분', '항목', '값', '단위'],
+            ['주요 지표', '고객 수', '2', '명'], ['주요 지표', '주문 수', '4', '건'],
+            ['주요 지표', '총매출', '8000', '원'], ['주요 지표', '평균 주문금액', '2000.0', '원'],
+            ['월별 매출', '2025-01', '1000', '원'], ['월별 매출', '2026-01', '5500', '원'],
+            ['월별 매출', '2026-03', '1500', '원'],
+        ]
+    elif extension == 'xlsx':
+        workbook = load_workbook(BytesIO(response.content))
+        try:
+            sheet = workbook['대시보드']
+            assert [sheet.cell(row, 3).value for row in range(6, 13)] == [2, 4, 8000, 2000, 1000, 5500, 1500]
+            assert sheet['C8'].data_type == 'n'
+            assert sheet['C8'].number_format == '#,##0'
+            assert sheet['B11'].value == '2026-01'
+            assert sheet.freeze_panes == 'C6'
+            assert sheet.auto_filter.ref == 'A5:D12'
+        finally:
+            workbook.close()
+    else:
+        assert response.content.startswith(b'%PDF-')
+        pdf = PdfReader(BytesIO(response.content))
+        pdf_text = '\n'.join(page.extract_text() for page in pdf.pages)
+        for value in ('매출 대시보드 보고서', '고객 수', '총매출', '8,000', '2026-01', '5,500', '1,500'):
+            assert value in pdf_text
+        assert '999,000' not in pdf_text and '888,000' not in pdf_text
+    with client.app.state.engine.connect() as connection:
+        assert connection.scalar(text('SELECT count(*) FROM orders')) == 7
+    print(f'[통과] {extension} 다운로드 형식·한글·지표·월별 매출 일치, 원본 주문 7건 보존')
+
+
+@pytest.mark.parametrize('extension', ['csv', 'xlsx', 'pdf'])
+def test_빈대시보드도_정상파일다운로드(dashboard_client, extension):
+    response = dashboard_client.get(f'/dashboard/export/{extension}')
+    assert response.status_code == 200
+    if extension == 'csv':
+        rows = list(csv.reader(StringIO(response.content.decode('utf-8-sig'))))
+        assert len(rows) == 5
+        assert all(float(row[2]) == 0 for row in rows[1:])
+    elif extension == 'xlsx':
+        workbook = load_workbook(BytesIO(response.content))
+        try:
+            assert workbook.active.max_row == 9
+            assert workbook.active['C8'].value == 0
+        finally:
+            workbook.close()
+    else:
+        assert '총매출' in PdfReader(BytesIO(response.content)).pages[0].extract_text()
+
+
+@pytest.mark.parametrize('extension', ['csv', 'xlsx', 'pdf'])
+def test_보고서다운로드_인증필수(client, extension):
+    response = client.get(f'/dashboard/export/{extension}', headers={'Accept': 'application/json'})
+    assert response.status_code == 401
+
+
+def test_지원하지않는다운로드형식은_422(dashboard_client):
+    assert dashboard_client.get('/dashboard/export/exe').status_code == 422
+
+
+def test_CSV와Excel에서_월문자열을_수식으로실행하지않음(dashboard_client):
+    client = dashboard_client
+    seed_sales(client)
+    with client.app.state.engine.begin() as connection:
+        connection.execute(text("UPDATE orders SET order_date='=1+1' WHERE id=1"))
+    csv_response = client.get('/dashboard/export/csv')
+    assert "'=1+1" in csv_response.content.decode('utf-8-sig')
+    workbook = load_workbook(BytesIO(client.get('/dashboard/export/xlsx').content))
+    try:
+        cell = next(cell for row in workbook.active for cell in row if cell.value == '=1+1')
+        assert cell.data_type == 's'
+        assert all(cell.data_type != 'f' for row in workbook.active for cell in row)
+    finally:
+        workbook.close()
+
+
+def test_PDF여러페이지에서도_전체월과_한글헤더유지():
+    data = {'metrics': {'customer_count': 1, 'order_count': 120, 'total_sales': 120000, 'average_order': 1000},
+            'monthly_sales': [{'month': f'{2000+index//12}-{index%12+1:02}', 'sales': 1000} for index in range(120)]}
+    pdf = PdfReader(BytesIO(dashboard_report(data, 'pdf')))
+    assert len(pdf.pages) > 1
+    assert all('구분' in page.extract_text() for page in pdf.pages)
+    assert '2009-12' in pdf.pages[-1].extract_text()
