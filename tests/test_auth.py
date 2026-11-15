@@ -306,3 +306,68 @@ def test_쿠키만료로_토큰없는_브라우저도_로그인안내(client):
     assert response.status_code == 200
     assert response.history[0].status_code == 303
     assert "세션이 만료되었습니다" in response.text
+
+
+@pytest.mark.parametrize("remaining", [1, 299, 300, 301, 3600])
+@pytest.mark.parametrize("path", ["/customers", "/", "/health"])
+def test_만료5분이내만_60분으로_자동갱신(client, frozen_time, remaining, path):
+    signup(client)
+    original = install_token(client, frozen_time, remaining)
+    response = client.get(path)
+    assert response.status_code == 200
+    if remaining > 300:
+        assert "set-cookie" not in response.headers
+        assert client.cookies[COOKIE_NAME] == original
+        return
+    refreshed = client.cookies[COOKIE_NAME]
+    claims = jwt.decode(refreshed, client.app.state.jwt_secret, algorithms=[ALGORITHM])
+    assert refreshed != original
+    assert claims["sub"] == "1"
+    assert claims["iat"] == int(frozen_time.timestamp())
+    assert claims["exp"] == int(frozen_time.timestamp()) + 3600
+    cookie = response.headers["set-cookie"].lower()
+    for flag in ("httponly", "secure", "samesite=strict", "max-age=3600", "path=/"):
+        assert flag in cookie
+    assert client.get("/customers").status_code == 200
+
+
+def test_갱신대상토큰_로그아웃은_쿠키삭제만(client, frozen_time):
+    signup(client)
+    install_token(client, frozen_time, 60)
+    response = client.post("/auth/logout", follow_redirects=False)
+    assert response.status_code == 303
+    cookies = response.headers.get_list("set-cookie")
+    assert len(cookies) == 1
+    assert "Max-Age=0" in cookies[0]
+    assert COOKIE_NAME not in client.cookies
+
+
+def test_갱신대상토큰_다른계정로그인_새계정쿠키_유지(client, frozen_time):
+    signup(client)
+    signup(client, email="second@example.com", name="다른직원")
+    install_token(client, frozen_time, 60)
+    response = signin(client, email="second@example.com")
+    assert response.status_code == 303
+    assert len(response.headers.get_list("set-cookie")) == 1
+    claims = jwt.decode(client.cookies[COOKIE_NAME], client.app.state.jwt_secret, algorithms=[ALGORITHM])
+    assert claims["sub"] == "2"
+    assert "다른직원님 안녕하세요" in client.get("/customers").text
+
+
+def test_인증실패_오류응답에서는_토큰갱신하지않음(client, frozen_time):
+    signup(client)
+    original = install_token(client, frozen_time, 60)
+    response = signin(client, password="wrong")
+    assert response.status_code == 401
+    assert "set-cookie" not in response.headers
+    assert client.cookies[COOKIE_NAME] == original
+
+
+def test_삭제된직원_유효서명토큰도_갱신하지않음(client, frozen_time):
+    signup(client)
+    install_token(client, frozen_time, 60)
+    with client.app.state.engine.begin() as connection:
+        connection.execute(text("DELETE FROM employees"))
+    response = client.get("/customers", headers={"Accept": "application/json"})
+    assert response.status_code == 401
+    assert "Max-Age=0" in response.headers["set-cookie"]

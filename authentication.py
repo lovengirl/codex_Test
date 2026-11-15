@@ -17,6 +17,7 @@ from database import get_session
 
 COOKIE_NAME = "access_token"
 TOKEN_SECONDS = 60 * 60
+REFRESH_SECONDS = 5 * 60
 ALGORITHM = "HS256"
 
 
@@ -46,6 +47,16 @@ def set_auth_cookie(response, employee_id: int, key: str):
 def clear_auth_cookie(response):
     response.delete_cookie(COOKIE_NAME, path="/", httponly=True, secure=True, samesite="strict")
     response.headers["Cache-Control"] = "no-store"
+
+
+async def refresh_auth_cookie(request: Request, call_next):
+    response = await call_next(request)
+    employee_id = getattr(request.state, "refresh_employee_id", None)
+    cookie_changed = any(header.lstrip().startswith(COOKIE_NAME + "=")
+                         for header in response.headers.getlist("set-cookie"))
+    if employee_id is not None and response.status_code < 400 and not cookie_changed:
+        set_auth_cookie(response, employee_id, request.app.state.jwt_secret)
+    return response
 
 
 def load_signing_key(db_path: Path) -> str:
@@ -99,9 +110,13 @@ def get_optional_user(request: Request, session: Annotated[Session, Depends(get_
             return None
     except jwt.InvalidTokenError:
         return None
-    return session.execute(text(
+    user = session.execute(text(
         "SELECT id, name FROM employees WHERE id = :id AND password_hash IS NOT NULL"
     ), {"id": employee_id}).mappings().first()
+    remaining = int(payload["exp"]) - datetime.now(timezone.utc).timestamp()
+    if user is not None and 0 < remaining <= REFRESH_SECONDS:
+        request.state.refresh_employee_id = user["id"]
+    return user
 
 
 def get_current_user(user=Depends(get_optional_user)):
