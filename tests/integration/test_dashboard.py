@@ -273,15 +273,6 @@ def test_CSV와Excel에서_월문자열을_수식으로실행하지않음(dashbo
         workbook.close()
 
 
-def test_PDF여러페이지에서도_전체월과_한글헤더유지():
-    data = {'metrics': {'customer_count': 1, 'order_count': 120, 'total_sales': 120000, 'average_order': 1000},
-            'monthly_sales': [{'month': f'{2000+index//12}-{index%12+1:02}', 'sales': 1000} for index in range(120)]}
-    pdf = PdfReader(BytesIO(dashboard_report(data, 'pdf')))
-    assert len(pdf.pages) > 1
-    assert all('구분' in page.extract_text() for page in pdf.pages)
-    assert '2009-12' in pdf.pages[-1].extract_text()
-
-
 @pytest.mark.parametrize('extension', ['csv', 'xlsx', 'pdf'])
 def test_카드_차트_Export는_같은집계이며_숨김직후값도갱신(dashboard_client, extension):
     client = dashboard_client

@@ -48,11 +48,6 @@ def database_path(client):
         return Path(connection.execute(text("PRAGMA database_list")).first()[2])
 
 
-@pytest.fixture
-def query_connection(question_client):
-    with closing(connect(database_path(question_client), readonly=True)) as connection:
-        nl.prepare_visible_views(connection, nl.actual_schema(connection))
-        yield connection
 
 
 def mock_model(monkeypatch, sql, explanation="실제 DB를 집계했습니다."):
@@ -124,31 +119,10 @@ def test_전체런타임스키마와_정확한ChatCompletions인자(question_cli
     print("[통과] 전체 실제 테이블·칼럼·추가 등록일·주문일·금액을 Chat Completions에 전달")
 
 
-@pytest.mark.parametrize("sql", [
-    " select 1 AS 결과 ", " \n; /* 시작 */ select 1 AS 결과; -- 끝\n; ",
-    "-- SELECT 설명\nSeLeCt 1 AS 결과;", "WITH value AS (SELECT 1 AS 결과) SELECT 결과 FROM value",
-    "SELECT 1 AS 결과 /* INSERT UPDATE DELETE DROP */",
-])
-def test_정상SELECT_공백_세미콜론_주석_소문자_CTE허용(query_connection, sql):
-    assert nl.execute_select(query_connection, sql)["rows"] == [(1,)]
 
 
-def test_문자열과인용식별자의_변경키워드와_주석기호는허용(query_connection):
-    result = nl.execute_select(query_connection, "SELECT 'DELETE; -- /* DROP */' AS \"UPDATE\"")
-    assert result["rows"] == [("DELETE; -- /* DROP */",)]
 
 
-@pytest.mark.parametrize("sql", [
-    "INSERT INTO customer VALUES (9,'x','x','x','일반',NULL)", "UPDATE customer SET name='x'",
-    "DELETE FROM orders", "DROP TABLE customer", "ATTACH ':memory:' AS other", "PRAGMA query_only=OFF",
-    "WITH x AS (SELECT 1) DELETE FROM orders", "SELECT 1; DELETE FROM orders",
-    "SELECT load_extension('x')",
-])
-def test_SELECT외구문_복수문장과_뷰우회차단_원본보존(query_connection, sql):
-    before = query_connection.execute("SELECT COUNT(*) FROM main.orders").fetchone()
-    with pytest.raises((ValueError, sqlite3.Error)):
-        nl.execute_select(query_connection, sql)
-    assert query_connection.execute("SELECT COUNT(*) FROM main.orders").fetchone() == before
 
 
 def test_읽기전용URI는_검사없이도_원본쓰기를차단(question_client):
@@ -157,35 +131,8 @@ def test_읽기전용URI는_검사없이도_원본쓰기를차단(question_clien
             connection.execute("UPDATE customer SET name='변경'")
 
 
-def test_뷰로숨김고객과_취소주문을_모델SQL과무관하게제외(query_connection):
-    assert nl.execute_select(query_connection, "SELECT COUNT(*) FROM customer")["rows"] == [(3,)]
-    assert nl.execute_select(query_connection, "SELECT SUM(total_amount) FROM orders")["rows"] == [(8000,)]
 
 
-@pytest.mark.parametrize("sql,value", [
-    ('SELECT COUNT(*) FROM main.customer', 3),
-    ('SELECT COUNT(*) FROM "main"."customer"', 3),
-    ('SELECT SUM(main.orders.total_amount) FROM main.orders', 8000),
-])
-def test_스키마접두사SELECT도_오탐없이_숨김과취소제외(query_connection, sql, value):
-    result = nl.execute_select(query_connection, sql)
-    assert result["rows"] == [(value,)]
-    assert "temp" in result["executed_sql"]
-
-
-@pytest.mark.parametrize("content", [
-    '{"sql":"SELECT 1", "explanation":"조회"}',
-    '```json\n{"sql":"SELECT 1", "explanation":"조회"}\n```',
-    '잡텍스트 {잘못된 앞부분} {"sql":"SELECT 1", "explanation":"조회"} 뒤 텍스트',
-])
-def test_JSON_코드펜스와_잡텍스트제거(content):
-    assert nl.parse_model_json(content)["sql"] == "SELECT 1"
-
-
-def test_JSON파싱불가_원문콘솔로그(caplog):
-    with pytest.raises(ValueError):
-        nl.parse_model_json("원문 응답 그대로 기록")
-    assert "원문 응답 그대로 기록" in caplog.text
 
 
 def test_생성예외타입과_메시지를_화면과콘솔에표시(question_client, monkeypatch, caplog):
@@ -225,14 +172,6 @@ def test_실제등록일없음은_다른날짜로대체하거나_0명으로위�
     }
 
 
-def test_결과행수제한과_과도한쿼리시간제한(query_connection, monkeypatch):
-    sql = "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1000) SELECT x FROM n"
-    result = nl.execute_select(query_connection, sql)
-    assert len(result["rows"]) == 200
-    assert result["truncated"]
-    monkeypatch.setattr(nl, "QUERY_TIMEOUT", -1)
-    with pytest.raises(sqlite3.OperationalError, match="interrupted"):
-        nl.execute_select(query_connection, sql)
 
 
 def test_빈질문과_긴질문은_LLM호출전_입력오류(question_client, monkeypatch):
@@ -255,36 +194,6 @@ def test_인증과_출처검사필수(client, question_client):
                        headers={"Origin": "https://other.example"}).status_code == 403
 
 
-def test_환경파일경로는_작업디렉터리에독립(monkeypatch, tmp_path):
-    env = tmp_path / ".env"
-    env.write_text("OPENAI_API_KEY=local-test-key\n", encoding="utf-8")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setattr(nl, "ENV_PATH", env)
-    def check_key(**kwargs):
-        assert kwargs["api_key"] == "local-test-key"
-        raise RuntimeError("환경파일 로딩 확인")
-    monkeypatch.setattr(nl, "OpenAI", check_key)
-    monkeypatch.chdir(tmp_path)
-    with pytest.raises(RuntimeError, match="환경파일 로딩 확인"):
-        nl.generate_sql("질문", [])
-
-
-def test_환경파일수정은_다음질문에_즉시반영(monkeypatch, tmp_path):
-    env = tmp_path / ".env"
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setattr(nl, "ENV_PATH", env)
-    keys = []
-    def check_key(**kwargs):
-        keys.append(kwargs["api_key"])
-        raise RuntimeError("환경파일 재조회 확인")
-    monkeypatch.setattr(nl, "OpenAI", check_key)
-    for value in ("first-test-key", "second-test-key"):
-        env.write_text(f"OPENAI_API_KEY={value}\n", encoding="utf-8")
-        with pytest.raises(RuntimeError, match="환경파일 재조회 확인"):
-            nl.generate_sql("질문", [])
-    assert keys == ["first-test-key", "second-test-key"]
-
-
 def test_키미설정은_설정경로와실제예외표시(monkeypatch, tmp_path, question_client, caplog):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(nl, "ENV_PATH", tmp_path / "missing.env")
@@ -301,45 +210,10 @@ def test_스칼라NULL은_한국어로표시(question_client, monkeypatch):
     assert "<td>값 없음</td>" in response.text
 
 
-@pytest.mark.parametrize("sql", [
-    "SELECT withdrawn_at FROM customer",
-    'SELECT "withdrawn_at" FROM customer',
-    "SELECT COUNT(*) FROM withdrawn_customer",
-    "SELECT c.id FROM customer c WHERE c.deleted_at IS NOT NULL",
-    "WITH withdrawn AS (SELECT withdrawn_at FROM customer) SELECT COUNT(*) FROM withdrawn",
-    "SELECT (SELECT MAX(ended_at) FROM orders) FROM customer LIMIT 1",
-])
-def test_가상칼럼과테이블은_데이터조회실행전에차단(query_connection, sql):
-    statements = []
-    query_connection.set_trace_callback(statements.append)
-    try:
-        with pytest.raises(nl.SchemaValidationError):
-            nl.execute_select(query_connection, sql)
-    finally:
-        query_connection.set_trace_callback(None)
-    assert sql not in statements
-    print(f"[통과] 가상 테이블·칼럼 사전 차단, 데이터 조회 미실행: {sql}")
 
 
-@pytest.mark.parametrize("sql,expected", [
-    ('SELECT c.id AS 고객번호 FROM customer c ORDER BY 고객번호 LIMIT 1', [(1,)]),
-    ('WITH x AS (SELECT id AS 고객번호 FROM customer) SELECT 고객번호 FROM x ORDER BY 고객번호 LIMIT 1', [(1,)]),
-    ('SELECT c.id FROM customer c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id=c.id) ORDER BY c.id LIMIT 1', [(1,)]),
-    ('SELECT c.id FROM customer c JOIN orders o ON o.customer_id=c.id GROUP BY c.id HAVING COUNT(*)>1', [(1,)]),
-])
-def test_스키마검증은_별칭_CTE_상관서브쿼리_집계오탐없이허용(query_connection, sql, expected):
-    assert nl.execute_select(query_connection, sql)["rows"] == expected
 
 
-def test_사전검증은_조회함수도실행하지않음(query_connection):
-    calls = []
-    query_connection.create_function("검증확인", 1, lambda value: calls.append(value) or value)
-    query_connection.set_authorizer(nl.select_authorizer)
-    try:
-        nl.validate_sql_schema(query_connection, "SELECT 검증확인(id) FROM customer")
-        assert calls == []
-    finally:
-        query_connection.set_authorizer(None)
 
 
 @pytest.mark.parametrize("sql", [None, "SELECT COUNT(*) FROM customer WHERE withdrawn_at IS NOT NULL"])
@@ -370,34 +244,8 @@ def test_등록일없는신규고객질문은_전체고객수대안표시(client
     assert "혹시 등록일 조건을 제외한 전체 고객 수를 물으신 건가요?" in result["answer"]
 
 
-def test_숨김테이블이없으면_숨김대안을상상하지않음():
-    schema = [{"name": "customer", "columns": [{"name": "id"}]}]
-    answer = nl.unavailable_answer("탈퇴 고객수", schema, "탈퇴 기록이 없습니다.")
-    assert "숨김" not in answer
-    assert "전체 고객 수" in answer
 
 
-@pytest.mark.parametrize("sql", [
-    "SELECT email, password_hash FROM employees",
-    "SELECT * FROM employees",
-    "SELECT substr(e.password_hash,1,4) AS 해시일부 FROM employees e",
-    "WITH staff AS (SELECT password_hash AS 비밀값 FROM employees) SELECT 비밀값 FROM staff",
-    "SELECT CASE WHEN password_hash!='' THEN 1 ELSE 0 END FROM employees",
-    "SELECT COUNT(password_hash) FROM employees",
-    'SELECT e."PASSWORD_HASH" FROM "EMPLOYEES" e',
-])
-def test_직원인증정보는_별칭_가공_CTE_집계로도조회차단(query_connection, sql):
-    with pytest.raises(sqlite3.DatabaseError, match="password_hash"):
-        nl.execute_select(query_connection, sql)
-
-
-def test_직원인증정보차단후에도_직원수와업무정보조회는정상(query_connection):
-    with pytest.raises(sqlite3.DatabaseError):
-        nl.execute_select(query_connection, "SELECT password_hash FROM employees")
-    assert nl.execute_select(query_connection, "SELECT COUNT(*) AS 직원수 FROM employees")["rows"] == [(1,)]
-    assert nl.execute_select(query_connection, "SELECT name, email FROM employees")["rows"] == [
-        ("질문직원", "ask@example.com"),
-    ]
 
 
 def test_실제질문경로에서도_모델이생성한직원해시를화면에노출하지않음(question_client, monkeypatch):

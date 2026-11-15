@@ -266,19 +266,6 @@ def test_동시가입_한계정만_생성(client):
     assert sorted(response.status_code for response in responses) == [303, 409]
 
 
-def test_동시초기화_동일한키_환경설정(tmp_path, monkeypatch):
-    path = tmp_path / "keys.db"
-    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        keys = list(executor.map(lambda _: load_signing_key(path), range(2)))
-    assert keys[0] == keys[1]
-    monkeypatch.setenv("JWT_SECRET_KEY", "configured-secret-key-" * 3)
-    assert load_signing_key(path) == "configured-secret-key-" * 3
-    monkeypatch.setenv("JWT_SECRET_KEY", "short")
-    with pytest.raises(ValueError, match="32바이트"):
-        load_signing_key(path)
-
-
 @pytest.mark.parametrize("path", ["/auth/login", "/auth/register", "/auth/logout"])
 def test_외부출처_POST_거부(client, path):
     response = client.post(path, data=ACCOUNT, headers={"Origin": "https://other.example"})

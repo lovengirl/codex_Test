@@ -72,7 +72,7 @@ TLS 옵션 없이 `python -m uvicorn main:app --reload`로 실행할 때는 `htt
 
 ```powershell
 # 홈 화면 200 OK 검증
-python -m pytest tests/test_home.py -v
+python -m pytest tests/api/test_home.py -v
 # 기존 unittest 테스트를 포함한 전체 검증
 python -m pytest -v
 # 실제 HTTPS 서버 검증
