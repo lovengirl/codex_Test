@@ -78,7 +78,7 @@ def test_조회_SQL은_공통숨김조건과_LIMIT_OFFSET_사용(authenticated_c
     finally:
         event.remove(engine, "before_cursor_execute", capture)
     assert response.status_code == 200
-    assert len(statements) == 2
+    assert len(statements) == 3
     assert "count(*)" in statements[0][0]
     assert all("NOT (EXISTS" in sql and "hidden_customer" in sql for sql, _ in statements)
     assert "ORDER BY customer.id" in statements[1][0]
@@ -432,8 +432,8 @@ def test_검색도_DB에서_조건과_LIMIT_OFFSET_적용(authenticated_client):
     finally:
         event.remove(engine, "before_cursor_execute", capture)
     assert response.status_code == 200
-    assert len(statements) == 2
-    assert all("LIKE" in sql and "hidden_customer" in sql for sql, _ in statements)
+    assert len(statements) == 3
+    assert all("LIKE" in sql and "hidden_customer" in sql for sql, _ in statements[:2])
     assert all("고객" not in sql for sql, _ in statements)
     assert "LIMIT ? OFFSET ?" in statements[1][0]
     assert statements[1][1][-2:] == (20, 20)
@@ -460,3 +460,113 @@ def test_이름과이메일_대소문자무시_부분일치_유니코드지원(a
     assert response.status_code == 200
     assert response.context["total"] == len(ids)
     assert [item["id"] for item in response.context["items"]] == ids
+
+
+@pytest.fixture
+def filter_client(authenticated_client):
+    client = authenticated_client
+    seed_customers(client, 64)
+    with client.app.state.engine.begin() as connection:
+        connection.execute(text(
+            "UPDATE customer SET name=CASE WHEN id%2=0 THEN '이민수' ELSE '이 민수' END, "
+            "grade='VIP', address='서울특별시 강남구' WHERE id<=55"
+        ))
+        connection.execute(text("UPDATE customer SET address='부산광역시 해운대구' WHERE id BETWEEN 46 AND 50"))
+        connection.execute(text("UPDATE customer SET grade='일반' WHERE id BETWEEN 51 AND 55"))
+        connection.execute(text("UPDATE customer SET address='제주특별자치도 제주시' WHERE id=64"))
+        connection.execute(text("INSERT INTO hidden_customer VALUES (1), (64)"))
+    return client
+
+
+@pytest.mark.parametrize("q", ["이민수", "이 민수", "이\t민\u3000수"])
+def test_저장된이름과_검색어_공백제거_동일고객조회(filter_client, q):
+    response = filter_client.get("/customers", params={"q": q, "grade": "VIP", "region": "서울특별시"})
+    assert response.status_code == 200
+    assert response.context["total"] == 44
+    assert response.context["total_pages"] == 3
+    assert [item["id"] for item in response.context["items"]] == list(range(2, 22))
+    assert response.text.count("<tr><td>") == 20
+
+
+@pytest.mark.parametrize("filters,total", [
+    ({"grade": "VIP"}, 49), ({"grade": "일반"}, 13),
+    ({"region": "서울특별시"}, 49), ({"region": "부산광역시"}, 5),
+    ({"grade": "VIP", "region": "부산광역시"}, 5),
+    ({"q": "CUSTOMER50@", "grade": "VIP", "region": "부산광역시"}, 1),
+])
+def test_등급지역_단독복합필터_실제목록건수반영(filter_client, filters, total):
+    response = filter_client.get("/customers", params=filters)
+    assert response.status_code == 200
+    assert response.context["total"] == total
+    for item in response.context["items"]:
+        if filters.get("grade"):
+            assert item["grade"] == filters["grade"]
+        if filters.get("region"):
+            assert item["address"].split()[0] == filters["region"]
+    assert response.context["regions"] == ["부산광역시", "서울", "서울특별시"]
+
+
+def test_조건URL공유_새로고침_모든페이지링크와폼값_유지(filter_client):
+    client = filter_client
+    filters = {"q": "이 민수", "grade": "VIP", "region": "서울특별시"}
+    response = client.get("/customers", params={**filters, "page": 2})
+    for page in (response, client.get(str(response.url))):
+        assert page.context["filters"] == filters
+        assert page.context["page"] == 2
+        assert [item["id"] for item in page.context["items"]] == list(range(22, 42))
+        assert 'name="q" value="이 민수"' in page.text
+        assert '<option value="VIP" selected>VIP</option>' in page.text
+        assert '<option value="서울특별시" selected>서울특별시</option>' in page.text
+        form = page.text.partition('role="search">')[2].partition("</form>")[0]
+        assert 'name="page"' not in form
+        navigation = page.text.partition('<nav aria-label="고객 목록 페이지">')[2].partition("</nav>")[0]
+        links = re.findall(r'href="([^"]+)"', navigation)
+        assert len(links) == 4
+        for link in links:
+            params = parse_qs(urlsplit(unescape(link)).query)
+            assert {key: params[key] for key in filters} == {key: [value] for key, value in filters.items()}
+        next_url = unescape(re.search(r'href="([^"]+)" rel="next"', navigation).group(1))
+        last_page = client.get(next_url)
+        assert [item["id"] for item in last_page.context["items"]] == [42, 43, 44, 45]
+        assert last_page.context["total"] == 44
+
+
+@pytest.mark.parametrize("filters", [
+    {"grade": "신규"}, {"region": "제주특별자치도"},
+    {"q": "이민수", "grade": "일반", "region": "부산광역시"},
+])
+def test_필터만으로도_결과없음안내_빈표없음_현재조건유지(filter_client, filters):
+    response = filter_client.get("/customers", params=filters)
+    assert response.status_code == 200
+    assert response.context["total"] == 0
+    assert response.context["items"] == []
+    assert "검색 결과가 없습니다." in response.text
+    assert "<table" not in response.text
+    for key, value in filters.items():
+        assert response.context[key] == value
+    if filters.get("region"):
+        region = filters["region"]
+        assert f'<option value="{region}" selected>{region}</option>' in response.text
+
+
+@pytest.mark.parametrize("filters", [{}, {"q": "", "grade": "", "region": ""},
+                                      {"q": "  ", "grade": " ", "region": " "}])
+def test_검색필터가_비면_전체표시고객목록_기존페이지네이션(filter_client, filters):
+    response = filter_client.get("/customers", params=filters)
+    assert response.status_code == 200
+    assert response.context["total"] == 62
+    assert len(response.context["items"]) == 20
+    assert response.context["filters"] == {}
+    assert 'href="https://testserver/customers?page=2" rel="next"' in response.text
+
+
+def test_공백제거검색에서도_퍼센트와밑줄_문자그대로_비교(authenticated_client):
+    client = authenticated_client
+    seed_customers(client, 2)
+    with client.app.state.engine.begin() as connection:
+        connection.execute(text("UPDATE customer SET name='이 %민_수' WHERE id=1"))
+        connection.execute(text("UPDATE customer SET name='이 XX민A수' WHERE id=2"))
+    response = client.get("/customers", params={"q": "이%민_수", "region": "서울", "grade": "일반"})
+    assert response.status_code == 200
+    assert response.context["total"] == 1
+    assert [item["id"] for item in response.context["items"]] == [1]

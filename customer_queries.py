@@ -3,6 +3,8 @@
 from sqlalchemy import column, exists, func, or_, select, table
 from sqlalchemy.orm import Session
 
+from database import compact_name
+
 
 PAGE_SIZE = 20
 customer = table("customer", *(column(name) for name in ("id", "name", "email", "address", "grade")))
@@ -22,18 +24,30 @@ def visible_customer(session: Session, customer_id: int):
     ).mappings().first()
 
 
-def customer_page(session: Session, page: int, q: str = ""):
+def customer_page(session: Session, page: int, q: str = "", grade: str = "", region: str = ""):
     """전체 행을 로드하지 않고 건수와 최대 20명의 고객만 조회한다."""
     visible = visible_customers()
     q = q.strip()
+    grade, region = grade.strip(), region.strip()
     if q:
         visible = visible.where(or_(
-            func.casefold(customer.c.name).contains(q.casefold(), autoescape=True),
+            func.compact_name(customer.c.name).contains(compact_name(q), autoescape=True),
             func.casefold(customer.c.email).contains(q.casefold(), autoescape=True),
         ))
+    if grade:
+        visible = visible.where(customer.c.grade == grade)
+    if region:
+        visible = visible.where(func.address_region(customer.c.address) == region)
     total = session.scalar(select(func.count()).select_from(visible.subquery()))
     total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     items = session.execute(
         visible.order_by(customer.c.id).limit(PAGE_SIZE).offset((page - 1) * PAGE_SIZE)
     ).mappings().all()
-    return {"items": items, "page": page, "total": total, "total_pages": total_pages, "q": q}
+    region_column = func.address_region(customer.c.address)
+    regions = session.scalars(
+        visible_customers().with_only_columns(region_column).where(region_column != "")
+        .distinct().order_by(region_column)
+    ).all()
+    filters = {key: value for key, value in (("q", q), ("grade", grade), ("region", region)) if value}
+    return {"items": items, "page": page, "total": total, "total_pages": total_pages,
+            "q": q, "grade": grade, "region": region, "regions": regions, "filters": filters}

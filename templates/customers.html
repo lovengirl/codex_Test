@@ -3,11 +3,31 @@
 {% block content %}
 <h1>고객 관리</h1>
 <p><a href="/customers/new">고객 등록</a></p>
-<form method="get" action="/customers" role="search">
-  <label for="customer-search">이름 또는 이메일 검색</label>
-  <input id="customer-search" type="search" name="q" value="{{ q }}" placeholder="이름 또는 이메일 입력">
+<form class="customer-search" method="get" action="/customers" role="search">
+  <div class="customer-search-query">
+    <label for="customer-search">이름 또는 이메일 검색</label>
+    <input id="customer-search" type="search" name="q" value="{{ q }}" placeholder="이름 또는 이메일 입력">
+  </div>
+  <label>등급
+    <select name="grade">
+      <option value="">전체 등급</option>
+      {% if grade and grade not in grades %}<option value="{{ grade }}" selected>{{ grade }}</option>{% endif %}
+      {% for option in grades %}
+      <option value="{{ option }}"{% if grade == option %} selected{% endif %}>{{ option }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>지역
+    <select name="region">
+      <option value="">전체 지역</option>
+      {% if region and region not in regions %}<option value="{{ region }}" selected>{{ region }}</option>{% endif %}
+      {% for option in regions %}
+      <option value="{{ option }}"{% if region == option %} selected{% endif %}>{{ option }}</option>
+      {% endfor %}
+    </select>
+  </label>
   <button type="submit">검색</button>
-  {% if q %}<a href="/customers">검색 초기화</a>{% endif %}
+  {% if filters %}<a href="/customers">검색 초기화</a>{% endif %}
 </form>
 <p>총 {{ total }}명 · {{ page }} / {{ total_pages }}페이지 · 페이지당 20명</p>
 {% if items %}
@@ -24,13 +44,12 @@
     </tbody>
   </table>
 </div>
-{% elif q %}
+{% elif filters %}
 <p>검색 결과가 없습니다.</p>
 {% else %}
 <p>표시할 고객이 없습니다.</p>
 {% endif %}
-{% set pagination_url = request.url_for('customers') %}
-{% if q %}{% set pagination_url = pagination_url.include_query_params(q=q) %}{% endif %}
+{% set pagination_url = request.url_for('customers').include_query_params(**filters) %}
 <nav aria-label="고객 목록 페이지">
   {% if page > 1 %}
   <a href="{{ pagination_url.include_query_params(page=1) }}">처음</a>

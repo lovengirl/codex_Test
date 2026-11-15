@@ -15,11 +15,24 @@ from models import SCHEMA
 DEFAULT_DB_PATH = Path(__file__).resolve().with_name("customer.db")
 
 
+def compact_name(value):
+    """이름 비교에 사용할 공백 제거·대소문자 정규화를 수행한다."""
+    return "".join(value.split()).casefold()
+
+
+def address_region(value):
+    """주소의 첫 시·도 항목을 지역으로 사용한다."""
+    parts = value.split(maxsplit=1)
+    return parts[0] if parts else ""
+
+
 def connect(db_path=DEFAULT_DB_PATH, *, check_same_thread=True):
     """외래키 검사와 유니코드 검색 함수를 준비한다. 호출자가 연결을 닫는다."""
     connection = sqlite3.connect(db_path, check_same_thread=check_same_thread)
     connection.execute("PRAGMA foreign_keys = ON")
     connection.create_function("casefold", 1, str.casefold, deterministic=True)
+    connection.create_function("compact_name", 1, compact_name, deterministic=True)
+    connection.create_function("address_region", 1, address_region, deterministic=True)
     return connection
 
 

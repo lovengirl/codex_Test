@@ -62,12 +62,13 @@ def email_in_use(session, email, customer_id=0):
 @router.get("")
 def customers(request: Request, page: int = Query(default=1, ge=1, le=(2**63 - 1) // 20),
               q: str = Query(default=""),
+              grade: str = Query(default=""), region: str = Query(default=""),
               user=Depends(get_current_user), session: Session = Depends(get_session)):
-    result = customer_page(session, page, q)
+    result = customer_page(session, page, q, grade, region)
     if page > result["total_pages"]:
         raise HTTPException(status_code=404, detail="해당 고객 페이지가 없습니다.")
     return templates.TemplateResponse(
-        request=request, name="customers.html", context={"user": user, **result},
+        request=request, name="customers.html", context={"user": user, "grades": GRADES, **result},
         headers={"Cache-Control": "no-store"},
     )
 

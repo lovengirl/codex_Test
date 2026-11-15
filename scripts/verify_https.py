@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone, timedelta
 from contextlib import closing
+from html import unescape
 import argparse
 import hashlib
 import json
@@ -99,6 +100,26 @@ def verify_customer_pagination(client, db_path, report):
     assert len(re.findall(r"<tr><td>(\d+)</td>", response.text)) == 20
     assert 'name="q" value="페이지검증"' in response.text
     report("[통과] HTTPS 이름·이메일 부분 검색, 이메일 대소문자 처리, 검색 결과 20명씩 페이지 이동")
+    conditions = {"q": "페이지 검증", "grade": "일반", "region": "서울", "page": 2}
+    response = client.get("/customers", params=conditions)
+    assert response.status_code == 200 and "총 10000명" in response.text
+    for expected in ('name="q" value="페이지 검증"',
+                     '<option value="일반" selected>일반</option>',
+                     '<option value="서울" selected>서울</option>'):
+        assert expected in response.text
+    next_url = unescape(re.search(r'href="([^"]+)" rel="next"', response.text).group(1))
+    for _ in range(2):
+        following = client.get(next_url)
+        assert following.status_code == 200 and "3 / 500페이지" in following.text
+        assert re.findall(r"<tr><td>(\d+)</td>", following.text) == [str(index) for index in range(first_id + 40, first_id + 60)]
+        for expected in ('name="q" value="페이지 검증"',
+                         '<option value="일반" selected>일반</option>',
+                         '<option value="서울" selected>서울</option>'):
+            assert expected in following.text
+    empty = client.get("/customers", params={"grade": "VIP", "region": "서울"})
+    assert empty.status_code == 200 and "검색 결과가 없습니다." in empty.text
+    assert "<table" not in empty.text
+    report("[통과] HTTPS 이름 공백 제거·등급·지역 복합 조회, URL 공유·새로고침·페이지 이동 후 조건과 실제 목록 유지")
 
 
 def verify_customer_crud(client, db_path, employee_email, report):
