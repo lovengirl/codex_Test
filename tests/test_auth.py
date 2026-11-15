@@ -75,7 +75,7 @@ def test_로그아웃_쿠키삭제_로그인화면_보호라우트차단(client)
     assert page.status_code == 200
     assert "홍길동님 안녕하세요" not in page.text
     assert "로그아웃" not in page.text
-    assert client.get("/customers").status_code == 401
+    assert client.get("/customers", headers={"Accept": "application/json"}).status_code == 401
 
 
 def test_로그인중_가입오류_로그인오류에도_공통헤더(client):
@@ -89,8 +89,9 @@ def test_로그인중_가입오류_로그인오류에도_공통헤더(client):
 
 @pytest.mark.parametrize("path", ["/customers", "/dashboard"])
 def test_토큰없이_접근하면_401(client, path):
-    assert client.get(path).status_code == 401
-    assert client.get(path).json()["detail"] == "로그인이 필요합니다."
+    response = client.get(path, headers={"Accept": "application/json"})
+    assert response.status_code == 401
+    assert response.json()["detail"] == "로그인이 필요합니다."
 
 
 def test_계정없음_비밀번호오류_동일한_한국어응답(client):
@@ -158,7 +159,7 @@ def test_잘못된_JWT는_401(client, kind):
     if kind == "tampered":
         token = "broken." + token
     client.cookies.set(COOKIE_NAME, token)
-    assert client.get("/customers").status_code == 401
+    assert client.get("/customers", headers={"Accept": "application/json"}).status_code == 401
 
 
 def test_기존직원_NULL해시_잘못된해시_로그인실패(client):
@@ -244,4 +245,64 @@ def test_이름_HTML이스케이프(client):
 def test_HTTP에서는_보안쿠키_전송차단(client):
     signup(client)
     signin(client)
-    assert client.get("http://testserver/customers").status_code == 401
+    assert client.get("http://testserver/customers", headers={"Accept": "application/json"}).status_code == 401
+
+
+@pytest.fixture
+def frozen_time(monkeypatch):
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return current.astimezone(tz) if tz else current.replace(tzinfo=None)
+
+    current = FixedDatetime(2030, 1, 1, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr("authentication.datetime", FixedDatetime)
+    monkeypatch.setattr("jwt.api_jwt.datetime", FixedDatetime)
+    return current
+
+
+def install_token(client, now, remaining_seconds):
+    token = jwt.encode({
+        "sub": "1",
+        "iat": now + timedelta(seconds=remaining_seconds - 3600),
+        "exp": now + timedelta(seconds=remaining_seconds),
+    }, client.app.state.jwt_secret, algorithm=ALGORITHM)
+    client.cookies.set(COOKIE_NAME, token, domain="testserver.local", path="/")
+    return token
+
+
+@pytest.mark.parametrize("path", ["/customers", "/dashboard"])
+@pytest.mark.parametrize("remaining", [-1, 0])
+def test_만료된토큰_브라우저는_로그인이동과_만료안내(client, frozen_time, path, remaining):
+    signup(client)
+    install_token(client, frozen_time, remaining)
+    response = client.get(path, headers={"Accept": "text/html"}, follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/auth/login?expired=true"
+    assert "Max-Age=0" in response.headers["set-cookie"]
+    assert COOKIE_NAME not in client.cookies
+    page = client.get(response.headers["location"], headers={"Accept": "text/html"})
+    assert page.status_code == 200
+    assert "세션이 만료되었습니다" in page.text
+    assert 'action="/auth/login"' in page.text
+    assert "홍길동님 안녕하세요" not in page.text
+    assert "set-cookie" not in page.headers
+
+
+@pytest.mark.parametrize("accept", ["application/json", "text/html, application/json; q=0.9"])
+def test_만료된토큰_API는_401_JSON_유지(client, frozen_time, accept):
+    signup(client)
+    install_token(client, frozen_time, -1)
+    response = client.get("/customers", headers={"Accept": accept}, follow_redirects=False)
+    assert response.status_code == 401
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json() == {"detail": "로그인이 필요합니다."}
+    assert "location" not in response.headers
+    assert "Max-Age=0" in response.headers["set-cookie"]
+
+
+def test_쿠키만료로_토큰없는_브라우저도_로그인안내(client):
+    response = client.get("/customers", headers={"Accept": "text/html"})
+    assert response.status_code == 200
+    assert response.history[0].status_code == 303
+    assert "세션이 만료되었습니다" in response.text

@@ -64,7 +64,8 @@ def verify_authentication(context, report):
     account = {"name": "인증검증직원", "email": "https-auth-" + str(time.time_ns()) + "@example.com",
                "address": "검증용 주소", "password": "검증용비밀번호123!"}
     with httpx.Client(base_url="https://127.0.0.1:8000", verify=context,
-                      trust_env=False, follow_redirects=False) as client:
+                      trust_env=False, follow_redirects=False,
+                      headers={"Accept": "application/json"}) as client:
         assert client.get("/customers").status_code == 401
         report("[통과] 토큰 없는 고객 페이지 접근 → 401")
         assert client.post("/auth/register", data=account).status_code == 303

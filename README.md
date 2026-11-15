@@ -52,7 +52,7 @@ python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000 --ssl-keyfile .
 - JWT 유효 기간과 쿠키 유지 시간은 60분입니다. 쿠키는 `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`를 사용합니다. HTTPS로 접속합니다.
 - 서명키는 `JWT_SECRET_KEY` 환경 변수에서 읽습니다. 설정 시 32바이트 이상을 사용합니다. 기본 실행에서는 DB 옆에 무작위 `customer.jwt-key`를 생성해 재시작 후에도 인증을 유지합니다. 이 파일은 Git에서 제외합니다.
 - 홈·고객·대시보드·인증·API 문서 HTML 페이지의 오른쪽 상단에 접속자 이름과 로그아웃 버튼을 표시합니다.
-- `POST /auth/logout`은 쿠키를 삭제하고 로그인 화면으로 이동합니다. 토큰 없는 보호 페이지 요청은 401을 반환합니다.
+- `POST /auth/logout`은 쿠키를 삭제하고 로그인 화면으로 이동합니다. 보호 페이지의 미인증·만료 요청은 브라우저에서 로그인 화면으로 이동하며 '세션이 만료되었습니다' 안내를 표시합니다. `Accept: application/json` 요청은 기존 401 JSON을 반환합니다.
 
 ## 데이터베이스
 

@@ -7,7 +7,8 @@ import secrets
 import tempfile
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, Request
+from fastapi.responses import JSONResponse, RedirectResponse
 import jwt
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -17,6 +18,34 @@ from database import get_session
 COOKIE_NAME = "access_token"
 TOKEN_SECONDS = 60 * 60
 ALGORITHM = "HS256"
+
+
+class AuthenticationRequired(Exception):
+    """보호 라우트의 미인증 응답을 요청 형식에 따라 처리한다."""
+
+
+async def authentication_required_response(request: Request, exc: AuthenticationRequired):
+    accepted = {part.split(";", 1)[0].strip().lower()
+                for part in request.headers.get("accept", "").split(",")}
+    if "application/json" in accepted:
+        response = JSONResponse({"detail": "로그인이 필요합니다."}, status_code=401)
+    else:
+        response = RedirectResponse("/auth/login?expired=true", status_code=303)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Vary"] = "Accept"
+    clear_auth_cookie(response)
+    return response
+
+
+def set_auth_cookie(response, employee_id: int, key: str):
+    response.set_cookie(COOKIE_NAME, create_token(employee_id, key), max_age=TOKEN_SECONDS,
+                        httponly=True, secure=True, samesite="strict", path="/")
+    response.headers["Cache-Control"] = "no-store"
+
+
+def clear_auth_cookie(response):
+    response.delete_cookie(COOKIE_NAME, path="/", httponly=True, secure=True, samesite="strict")
+    response.headers["Cache-Control"] = "no-store"
 
 
 def load_signing_key(db_path: Path) -> str:
@@ -77,5 +106,5 @@ def get_optional_user(request: Request, session: Annotated[Session, Depends(get_
 
 def get_current_user(user=Depends(get_optional_user)):
     if user is None:
-        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+        raise AuthenticationRequired()
     return user

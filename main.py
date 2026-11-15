@@ -4,7 +4,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
 
-from authentication import load_signing_key
+from authentication import (
+    AuthenticationRequired, authentication_required_response,
+    load_signing_key,
+)
 from database import DEFAULT_DB_PATH, initialize_database, make_engine
 from routers import auth, customers, dashboard, health, home
 
@@ -22,6 +25,7 @@ def create_app(db_path: Path = DEFAULT_DB_PATH) -> FastAPI:
 
     app = FastAPI(title="Customer Manager", version="0.2.0", lifespan=lifespan,
                   docs_url=None, redoc_url=None)
+    app.add_exception_handler(AuthenticationRequired, authentication_required_response)
 
     app.include_router(home.router)
     app.include_router(health.router)

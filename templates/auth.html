@@ -4,6 +4,7 @@
 {% block content %}
 <section class="panel">
   <h1>{{ '회원가입' if registering else '로그인' }}</h1>
+  {% if expired %}<p class="error" role="alert">세션이 만료되었습니다</p>{% endif %}
   {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
   {% if registered %}<p class="success" role="status">회원가입이 완료되었습니다. 로그인해 주세요.</p>{% endif %}
   <form class="fields" action="/auth/{{ mode }}" method="post">

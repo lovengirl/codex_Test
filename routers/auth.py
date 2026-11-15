@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from authentication import COOKIE_NAME, TOKEN_SECONDS, create_token, get_optional_user
+from authentication import clear_auth_cookie, get_optional_user, set_auth_cookie
 from database import get_session
 from templating import templates
 
@@ -30,9 +30,10 @@ def check_origin(request: Request):
 router = APIRouter(prefix="/auth", tags=["인증"], dependencies=[Depends(check_origin)])
 
 
-def auth_page(request, mode, *, user=None, error=None, status_code=200, registered=False):
+def auth_page(request, mode, *, user=None, error=None, status_code=200, registered=False,
+              expired=False):
     return templates.TemplateResponse(request=request, name="auth.html", context={
-        "user": user, "mode": mode, "error": error, "registered": registered,
+        "user": user, "mode": mode, "error": error, "registered": registered, "expired": expired,
     }, status_code=status_code, headers={"Cache-Control": "no-store"})
 
 
@@ -42,8 +43,9 @@ def register_page(request: Request, user=Depends(get_optional_user)):
 
 
 @router.get("/login")
-def login_page(request: Request, registered: bool = False, user=Depends(get_optional_user)):
-    return auth_page(request, "login", user=user, registered=registered)
+def login_page(request: Request, registered: bool = False, expired: bool = False,
+               user=Depends(get_optional_user)):
+    return auth_page(request, "login", user=user, registered=registered, expired=expired)
 
 
 @router.post("/register")
@@ -102,15 +104,12 @@ def login(request: Request, session: Annotated[Session, Depends(get_session)],
     if not employee or not stored_hash or not valid_length or not verified:
         return auth_page(request, "login", user=user, error=LOGIN_ERROR, status_code=401)
     response = RedirectResponse("/customers", status_code=303)
-    response.set_cookie(COOKIE_NAME, create_token(employee["id"], request.app.state.jwt_secret),
-                        max_age=TOKEN_SECONDS, httponly=True, secure=True, samesite="strict", path="/")
-    response.headers["Cache-Control"] = "no-store"
+    set_auth_cookie(response, employee["id"], request.app.state.jwt_secret)
     return response
 
 
 @router.post("/logout")
 def logout():
     response = RedirectResponse("/auth/login", status_code=303)
-    response.delete_cookie(COOKIE_NAME, path="/", httponly=True, secure=True, samesite="strict")
-    response.headers["Cache-Control"] = "no-store"
+    clear_auth_cookie(response)
     return response
