@@ -2,6 +2,7 @@
 {% block title %}고객 · Customer Manager{% endblock %}
 {% block content %}
 <h1>고객 관리</h1>
+<p><a href="/customers/new">고객 등록</a></p>
 <p>총 {{ total }}명 · {{ page }} / {{ total_pages }}페이지 · 페이지당 20명</p>
 {% if items %}
 <div style="overflow-x: auto;">
@@ -12,7 +13,7 @@
     </thead>
     <tbody>
       {% for customer in items %}
-      <tr><td>{{ customer.id }}</td><td>{{ customer.name }}</td><td>{{ customer.email }}</td><td>{{ customer.address }}</td><td>{{ customer.grade }}</td></tr>
+      <tr><td>{{ customer.id }}</td><td><a href="/customers/{{ customer.id }}">{{ customer.name }}</a></td><td>{{ customer.email }}</td><td>{{ customer.address }}</td><td>{{ customer.grade }}</td></tr>
       {% endfor %}
     </tbody>
   </table>

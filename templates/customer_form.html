@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% set editing = customer_id is not none %}
+{% block title %}고객 {{ '수정' if editing else '등록' }} · Customer Manager{% endblock %}
+{% block content %}
+<section class="panel">
+  <h1>고객 {{ '수정' if editing else '등록' }}</h1>
+  {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+  <form class="fields" method="post" action="{{ '/customers/' ~ customer_id ~ '/edit' if editing else '/customers' }}">
+    <label>이름<input name="name" value="{{ values.get('name', '') }}" autocomplete="name" required></label>
+    <label>이메일<input type="email" name="email" value="{{ values.get('email', '') }}" autocomplete="email" required></label>
+    <label>주소<input name="address" value="{{ values.get('address', '') }}" autocomplete="street-address" required></label>
+    <label>등급
+      <select name="grade" required>
+        {% for grade in grades %}
+        <option value="{{ grade }}" {% if values.get('grade', '신규') == grade %}selected{% endif %}>{{ grade }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button class="submit" type="submit">{{ '수정 저장' if editing else '등록' }}</button>
+  </form>
+  <p><a href="{{ '/customers/' ~ customer_id if editing else '/customers' }}">취소</a></p>
+</section>
+{% endblock %}

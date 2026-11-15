@@ -15,6 +15,13 @@ def visible_customers():
     return select(customer).where(~hidden)
 
 
+def visible_customer(session: Session, customer_id: int):
+    """상세 조회와 변경 전 확인에도 공통 숨김 제외 조건을 적용한다."""
+    return session.execute(
+        visible_customers().where(customer.c.id == customer_id)
+    ).mappings().first()
+
+
 def customer_page(session: Session, page: int):
     """전체 행을 로드하지 않고 건수와 최대 20명의 고객만 조회한다."""
     visible = visible_customers()

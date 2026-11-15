@@ -92,6 +92,57 @@ def verify_customer_pagination(client, db_path, report):
     report(f"[통과] 임시 DB 고객 10,000명 → 500페이지, HTTPS 1·250·500페이지 최대 응답 {max(durations):.3f}초")
 
 
+def verify_customer_crud(client, db_path, employee_email, report):
+    """임시 DB의 HTTPS 등록·수정·숨김 삭제 및 주문 이력을 검증한다."""
+    listing = client.get("/customers")
+    original_total = int(re.search(r"총 (\d+)명", listing.text).group(1))
+    values = {"name": "HTTPS등록고객", "email": f"crud-{time.time_ns()}@example.com",
+              "address": "부산", "grade": "신규"}
+    assert client.get("/customers/new").status_code == 200
+    response = client.post("/customers", data=values)
+    assert response.status_code == 303
+    detail_url = response.headers["location"]
+    customer_id = int(detail_url.rsplit("/", 1)[1])
+    last_page = (original_total + 1 + 19) // 20
+    listing = client.get("/customers", params={"page": last_page})
+    assert f"총 {original_total + 1}명" in listing.text
+    assert f'href="{detail_url}"' in listing.text
+    report("[통과] HTTPS 고객 등록 → 목록 총건수 증가 및 상세 링크 반영")
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        with connection:
+            employee_id = connection.execute("SELECT id FROM employees WHERE email=?", (employee_email,)).fetchone()[0]
+            product_id = connection.execute(
+                "INSERT INTO product (name, category, price) VALUES ('HTTPS주문검증상품', '식품', 1000)"
+            ).lastrowid
+            order_id = connection.execute(
+                "INSERT INTO orders (customer_id, product_id, employee_id, quantity, total_amount, order_date, status) "
+                "VALUES (?, ?, ?, 2, 2000, '2026-11-15', '완료')",
+                (customer_id, product_id, employee_id),
+            ).lastrowid
+    assert client.get(detail_url + "/edit").status_code == 200
+    changed = values | {"name": "HTTPS수정고객", "address": "서울", "grade": "VIP"}
+    response = client.post(detail_url + "/edit", data=changed)
+    assert response.status_code == 303 and response.headers["location"] == detail_url
+    detail = client.get(detail_url)
+    assert detail.status_code == 200
+    for expected in ("HTTPS수정고객", "서울", "VIP", "HTTPS주문검증상품", "2,000원", "2026-11-15"):
+        assert expected in detail.text
+    report("[통과] HTTPS 고객 수정 → 상세 반영 및 본인 주문 이력 표시")
+    assert client.post(detail_url + "/delete").status_code == 303
+    assert client.get(detail_url).status_code == 404
+    assert client.get(detail_url + "/edit").status_code == 404
+    listing = client.get("/customers")
+    assert f"총 {original_total}명" in listing.text
+    assert f'href="{detail_url}"' not in listing.text
+    with closing(sqlite3.connect(db_path)) as connection:
+        stored = connection.execute("SELECT name, email, address, grade FROM customer WHERE id=?", (customer_id,)).fetchone()
+        assert stored == tuple(changed[field] for field in ("name", "email", "address", "grade"))
+        assert connection.execute("SELECT customer_id FROM hidden_customer WHERE customer_id=?", (customer_id,)).fetchone() == (customer_id,)
+        assert connection.execute("SELECT customer_id FROM orders WHERE id=?", (order_id,)).fetchone() == (customer_id,)
+    report("[통과] HTTPS 숨김 삭제 → 목록·상세에서 제외, customer 원본 행·hidden_customer 기록·주문 유지")
+
+
 def verify_authentication(context, report, db_path, base_url):
     account = {"name": "인증검증직원", "email": "https-auth-" + str(time.time_ns()) + "@example.com",
                "address": "검증용 주소", "password": "검증용비밀번호123!"}
@@ -118,6 +169,7 @@ def verify_authentication(context, report, db_path, base_url):
             assert page.status_code == 200
             assert "인증검증직원님 안녕하세요" in page.text and "로그아웃" in page.text
         report("[통과] 페이지 이동 후 인증 유지 및 모든 HTML 페이지의 이름·로그아웃 표시")
+        verify_customer_crud(client, db_path, account["email"], report)
         verify_customer_pagination(client, db_path, report)
         logout = client.post("/auth/logout")
         assert logout.status_code == 303 and logout.headers["location"] == "/auth/login"
