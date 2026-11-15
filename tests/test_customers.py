@@ -439,3 +439,24 @@ def test_검색도_DB에서_조건과_LIMIT_OFFSET_적용(authenticated_client):
     assert statements[1][1][-2:] == (20, 20)
     assert response.context["total"] == 41
     assert len(response.context["items"]) == 20
+
+
+@pytest.mark.parametrize("q,ids", [
+    ("aLiCe", [1, 2]), ("EXAMPLE.COM", [1, 2, 3]), ("길동", [3]),
+    ("MÜLLER", [2]), ("STRASSE", [2]), ("ÜSER@", [2]),
+])
+def test_이름과이메일_대소문자무시_부분일치_유니코드지원(authenticated_client, q, ids):
+    client = authenticated_client
+    with client.app.state.engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO customer (id, name, email, address, grade) "
+            "VALUES (:id, :name, :email, '서울', '일반')"
+        ), [
+            {"id": 1, "name": "ALICE Kim", "email": "Alice@Example.COM"},
+            {"id": 2, "name": "Alice Müller Straße", "email": "üser@example.com"},
+            {"id": 3, "name": "홍길동", "email": "hong@example.com"},
+        ])
+    response = client.get("/customers", params={"q": q})
+    assert response.status_code == 200
+    assert response.context["total"] == len(ids)
+    assert [item["id"] for item in response.context["items"]] == ids

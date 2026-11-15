@@ -16,9 +16,10 @@ DEFAULT_DB_PATH = Path(__file__).resolve().with_name("customer.db")
 
 
 def connect(db_path=DEFAULT_DB_PATH, *, check_same_thread=True):
-    """외래키 검사가 활성화된 연결을 반환한다. 호출자가 연결을 닫는다."""
+    """외래키 검사와 유니코드 검색 함수를 준비한다. 호출자가 연결을 닫는다."""
     connection = sqlite3.connect(db_path, check_same_thread=check_same_thread)
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.create_function("casefold", 1, str.casefold, deterministic=True)
     return connection
 
 

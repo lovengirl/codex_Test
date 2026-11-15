@@ -28,8 +28,8 @@ def customer_page(session: Session, page: int, q: str = ""):
     q = q.strip()
     if q:
         visible = visible.where(or_(
-            customer.c.name.icontains(q, autoescape=True),
-            customer.c.email.icontains(q, autoescape=True),
+            func.casefold(customer.c.name).contains(q.casefold(), autoescape=True),
+            func.casefold(customer.c.email).contains(q.casefold(), autoescape=True),
         ))
     total = session.scalar(select(func.count()).select_from(visible.subquery()))
     total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
