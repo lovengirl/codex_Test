@@ -33,9 +33,10 @@ def is_database_busy(error):
     return code & 0xFF in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
 
 
-def connect(db_path=DEFAULT_DB_PATH, *, check_same_thread=True):
+def connect(db_path=DEFAULT_DB_PATH, *, check_same_thread=True, readonly=False):
     """외래키 검사와 유니코드 검색 함수를 준비한다. 호출자가 연결을 닫는다."""
-    connection = sqlite3.connect(db_path, check_same_thread=check_same_thread)
+    target = Path(db_path).resolve().as_uri() + "?mode=ro" if readonly else db_path
+    connection = sqlite3.connect(target, uri=readonly, check_same_thread=check_same_thread)
     connection.execute("PRAGMA foreign_keys = ON")
     connection.create_function("casefold", 1, str.casefold, deterministic=True)
     connection.create_function("compact_name", 1, compact_name, deterministic=True)

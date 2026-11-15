@@ -16,10 +16,10 @@ customer = table("customer", *(column(name) for name in ("id", "name", "email", 
 hidden_customer = table("hidden_customer", column("customer_id"))
 
 
-def visible_customers():
+def visible_customers(source=customer):
     """모든 고객 조회에서 재사용할 숨김 제외 SELECT를 반환한다."""
-    hidden = exists().where(hidden_customer.c.customer_id == customer.c.id)
-    return select(customer).where(~hidden)
+    hidden = exists().where(hidden_customer.c.customer_id == source.c.id)
+    return select(source).where(~hidden)
 
 
 def visible_customer(session: Session, customer_id: int):

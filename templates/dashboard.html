@@ -2,6 +2,15 @@
 {% block title %}대시보드 · Customer Manager{% endblock %}
 {% block extra_head %}
 <style>
+  .dashboard-question { padding: 24px; background: white; border: 1px solid #dce3e9; border-radius: 12px; margin-bottom: 24px; }
+  .dashboard-question h2 { margin: 0 0 12px; font-size: 20px; }
+  .dashboard-question form { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; }
+  .dashboard-question label { flex: 1 1 300px; }
+  .question-result { margin-top: 20px; overflow-wrap: anywhere; }
+  .question-result pre { white-space: pre-wrap; padding: 16px; background: #f3f4f6; border-radius: 8px; }
+  .question-table { overflow-x: auto; }
+  .question-table table { border-collapse: collapse; width: 100%; }
+  .question-table td, .question-table th { text-align: left; padding: 8px 12px; border-bottom: 1px solid #dce3e9; }
   .dashboard-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin: 24px 0; }
   .dashboard-metrics div, .dashboard-chart { padding: 24px; background: white; border: 1px solid #dce3e9; border-radius: 12px; }
   .dashboard-metrics dt { color: #667085; }
@@ -17,6 +26,54 @@
 {% endblock %}
 {% block content %}
 <h1>대시보드</h1>
+<section class="dashboard-question" aria-labelledby="question-title">
+  <h2 id="question-title">데이터에 질문하기</h2>
+  <form method="post" action="/dashboard/ask">
+    <label for="question">질문
+      <input id="question" name="question" required maxlength="2000" placeholder="예: 이번 달 매출"
+             value="{{ question_result.question if question_result else '' }}" aria-describedby="question-model">
+    </label>
+    <button class="submit" type="submit">질문</button>
+  </form>
+  <p id="question-model">사용 모델 {{ model }} · 한국 날짜 기준 · 숨김 고객과 취소 주문 제외</p>
+  <div class="question-result" aria-live="polite" aria-label="답변 및 결과">
+    {% if question_result %}
+      {% if question_result.error %}
+      <pre class="error" role="alert">{{ question_result.error }}</pre>
+      {% else %}
+      <h3>답변</h3>
+      <p>{{ question_result.answer }}</p>
+      {% endif %}
+      {% if question_result.explanation and question_result.explanation != question_result.answer %}
+      <p>{{ question_result.explanation }}</p>
+      {% endif %}
+      {% if question_result.sql %}
+      <h3>생성된 SQL</h3>
+      <pre><code>{{ question_result.sql }}</code></pre>
+      {% endif %}
+      {% if question_result.executed_sql and question_result.executed_sql != question_result.sql %}
+      <h3>실행 SQL</h3>
+      <pre><code>{{ question_result.executed_sql }}</code></pre>
+      {% endif %}
+      {% if question_result.columns %}
+      <div class="question-table">
+        <table>
+          <caption>조회 결과</caption>
+          <thead><tr>{% for name in question_result.columns %}<th scope="col">{{ name }}</th>{% endfor %}</tr></thead>
+          <tbody>
+          {% for row in question_result.rows %}
+            <tr>{% for value in row %}<td>{{ '값 없음' if value is none else value }}</td>{% endfor %}</tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+      {% if question_result.truncated %}<p>결과가 많아 처음 200개 행을 표시합니다.</p>{% endif %}
+    {% else %}
+    <p>질문을 입력하면 답변과 조회 결과, 생성된 SQL이 여기에 표시됩니다.</p>
+    {% endif %}
+  </div>
+</section>
 <p>전체 기간 기준 · 숨김 고객 제외 · 주문 수와 매출은 취소 주문 제외 · 평균 주문금액은 원 단위 반올림</p>
 <dl class="dashboard-metrics" aria-label="주요 지표">
   <div><dt>고객 수</dt><dd>{{ "{:,}".format(metrics.customer_count) }}명</dd></div>
