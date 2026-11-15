@@ -21,7 +21,7 @@ Python, FastAPI, SQLAlchemy로 만드는 고객관리 웹 서비스입니다. S1
 | 자연어 질문 | `gpt-5-mini` Chat Completions, 실제 DB 스키마 전달, 읽기 전용 SELECT와 실행 전 스키마 검증 |
 | AI Insight | 기존 집계만 인용한 한국어 요약, 비동기 생성, 추가 SQL 없음, 오류·수치 검증 불일치 시 숨김 |
 | 로컬 HTTPS | 개발 인증서 생성 및 실행 검증 도구 |
-| 테스트 | 홈 응답, DB 보존, 외래키 검사 및 장애 응답 검증 |
+| 테스트 | 카드·차트·Export 값 비교, 자연어 SQL·Insight 회귀 검증, 인증·고객 관리·DB 보존 검증 |
 
 고객 관리, 매출 대시보드·Export, 자연어 질문과 AI Insight를 구현하고 통합 검증했습니다.
 전체 테스트는 311개이며 태스크별 완료 상태와 리뷰 반영 내역은 [TODO.md](TODO.md)에서 확인합니다.
@@ -57,11 +57,48 @@ python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000 --ssl-keyfile .
 `uvicorn` 명령을 찾지 못하면 위의 `python -m uvicorn` 형식으로 실행합니다.
 `No module named uvicorn`이 표시되면 같은 Python으로 의존성을 설치했는지 확인합니다.
 
+같은 포트에는 서버를 하나만 실행합니다. 이미 실행한 서버는 해당 터미널에서 `Ctrl+C`로 종료합니다.
+8000번 포트에서 `WinError 10013` 등으로 실행할 수 없으면 다른 포트로 실행합니다.
+
+```powershell
+python -m uvicorn main:app --host 127.0.0.1 --port 8001 --ssl-keyfile .certs/localhost.key --ssl-certfile .certs/localhost.crt
+```
+
+이 경우 대시보드 주소는 `https://127.0.0.1:8001/dashboard`입니다.
+
 자연어 질문과 AI Insight를 사용하려면 프로젝트 루트 `.env`에 `OPENAI_API_KEY`를 설정합니다.
 키와 `.env`는 Git에서 제외합니다. 대시보드에서 로그인이 필요하면 로그인 후 원래 대시보드로 복귀합니다.
 AI Insight는 화면 표시 후 비동기로 생성되며, 생성·수치 검증 오류 시 카드가 숨겨집니다.
 현재 DB에 없는 고객 등록일은 대안 질문으로, 집계 입력에 없는 주간 변화·상위 고객 비중은 확인 불가로 안내합니다.
 인증용 `password_hash` 값의 자연어 SQL 조회는 모델 응답과 관계없이 차단합니다.
+
+`.env` 설정 예시는 다음과 같습니다. 실제 발급받은 키로 값을 바꾸고 파일을 저장합니다.
+
+```dotenv
+OPENAI_API_KEY=여기에_발급받은_API_키
+```
+
+VS Code의 `.vscode/settings.json`에는 Python 터미널의 환경 파일 로딩 설정이 포함되어 있습니다.
+환경 설정을 바꾼 뒤에는 개발 서버를 다시 시작합니다.
+
+## 대시보드 사용 방법
+
+1. 회원가입 후 로그인하고 상단 **대시보드** 메뉴를 엽니다.
+2. 지표 카드 4개와 월별 매출 차트를 확인합니다. 집계는 DB의 `COUNT`, `SUM`, `AVG`, `GROUP BY`로 처리합니다.
+3. 다운로드 영역에서 **CSV**, **Excel**, **PDF**를 선택하면 주요 지표와 월별 매출 보고서를 받습니다.
+4. 상단 질문창에 자연어 질문을 입력하면 한국어 답변, 조회 결과, 생성된 SQL을 함께 표시합니다.
+5. AI Insight는 기존 집계값만 사용해 2~3문장으로 표시합니다. 생성 오류가 나면 카드를 숨깁니다.
+
+자연어 질문은 `gpt-5-mini`의 `chat.completions.create`와 JSON 응답 형식을 사용합니다.
+런타임에 `sqlite_master`와 `PRAGMA table_xinfo`로 전체 테이블·칼럼을 조회하고,
+생성된 SQL은 실제 스키마와 대조한 뒤 읽기 전용 연결에서 실행합니다.
+공백·주석·소문자·세미콜론이 포함된 정상 SELECT를 허용하며 데이터 변경 구문은 차단합니다.
+API 호출·SQL 처리 오류는 예외 타입과 메시지를 화면과 콘솔에 표시합니다.
+
+예를 들어 **이번 달 매출**은 주문일·금액을 집계합니다.
+**2026년 신규 고객수**는 현재 DB에 고객 등록일이 없어 숫자를 생성하지 않고 대안을 안내합니다.
+**탈퇴 고객 수**처럼 직접 대응하는 데이터가 없는 질문에는 숨김 고객 수 조회를 제안합니다.
+전주 대비 변화와 상위 고객 비중도 기존 집계에 없으므로 Insight에서 확인 불가로 표시합니다.
 
 ## 회원가입 및 인증
 
@@ -109,6 +146,12 @@ python scripts/verify_https.py --port 18001
 대시보드 카드·차트·Export 3형식의 값 일치와 갱신, 자연어 SQL 정상 조회·스키마 환각·인증정보 차단,
 AI Insight의 추가 SQL 0회·수치 근거·생성 오류 시 생략도 검증합니다.
 
+최근 통합 검증에서는 전체 **311개 테스트가 통과**했습니다.
+별도 포트의 HTTPS 검증에서 대시보드 응답은 **0.207초**였으며,
+카드·차트와 CSV·Excel·PDF의 값을 비교하고 원본 DB 보존도 확인했습니다.
+리뷰에서 발견된 직원 비밀번호 해시 조회 경로는 차단하고 회귀 테스트를 추가했습니다.
+성능 수치는 검증 당시 환경의 측정값이며, 자연어 질문과 Insight의 외부 API 응답 시간은 별도입니다.
+
 pytest 임시 DB는 프로젝트의 `.pytest_tmp/run-<실행별 ID>/`에 생성합니다.
 사용자 계정이나 동시 실행 간 폴더 권한 충돌을 방지하도록 실행마다 별도 경로를 사용합니다.
 `--basetemp`를 직접 지정하면 해당 경로를 우선하며, `.pytest_tmp/`는 Git에서 제외합니다.
@@ -128,6 +171,11 @@ customer-manager/
 ├── database.py             # SQLite 연결, 초기화, SQLAlchemy 세션
 ├── models.py               # 실제 DB의 스키마 정의
 ├── model.py                # 현재 앱에서 사용하지 않는 별도 모델
+├── authentication.py       # JWT 쿠키 인증과 서명키 관리
+├── customer_queries.py     # 공통 숨김 고객 제외
+├── natural_language.py     # 실제 스키마 기반 SQL 생성·검증·읽기 전용 실행
+├── dashboard_exports.py    # CSV·Excel·한글 PDF 보고서
+├── ai_insight.py           # 기존 집계 기반 비동기 Insight
 ├── requirements.txt
 ├── routers/
 │   ├── home.py
@@ -135,13 +183,21 @@ customer-manager/
 │   ├── auth.py
 │   ├── customers.py
 │   └── dashboard.py
+├── templates/              # 질문창·다운로드·Insight를 포함한 화면
 ├── scripts/
 │   ├── create_dev_cert.py
 │   └── verify_https.py
 ├── tests/
 │   ├── conftest.py
 │   ├── test_home.py
-│   └── test_app.py
+│   ├── test_app.py
+│   ├── test_auth.py
+│   ├── test_customers.py
+│   ├── test_dashboard.py
+│   ├── test_natural_language.py
+│   ├── test_ai_insight.py
+│   └── test_temp_paths.py
+├── TODO.md                 # 태스크별 진행률과 검증 결과
 └── AGENTS.md               # 실행·테스트·개발 규칙
 ```
 
