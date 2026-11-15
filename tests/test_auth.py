@@ -27,6 +27,56 @@ def signin(client, **changes):
     return client.post("/auth/login", data=ACCOUNT | changes, follow_redirects=False)
 
 
+def test_대시보드접근_로그인후_질문창으로자동복귀(client):
+    signup(client)
+    response = client.get("/dashboard", headers={"Accept": "text/html"}, follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/auth/login?expired=true&next=/dashboard"
+    page = client.get(response.headers["location"])
+    assert 'name="next" value="/dashboard"' in page.text
+    assert "로그인 후 매출 대시보드와 자연어 질문" in page.text
+    response = signin(client, **{"next": "/dashboard"})
+    assert response.headers["location"] == "/dashboard"
+    dashboard = client.get(response.headers["location"])
+    assert dashboard.status_code == 200
+    assert 'name="question"' in dashboard.text
+    assert 'href="/dashboard" aria-current="page"' in dashboard.text
+    print("[통과] 대시보드 → 로그인 → 대시보드 질문창 자동 복귀")
+
+
+def test_로그인오류후에도_대시보드복귀경로유지(client):
+    signup(client)
+    response = signin(client, password="wrong", **{"next": "/dashboard"})
+    assert response.status_code == 401
+    assert 'name="next" value="/dashboard"' in response.text
+    assert 'href="/auth/register?next=/dashboard"' in response.text
+    assert signin(client, **{"next": "/dashboard"}).headers["location"] == "/dashboard"
+
+
+def test_회원가입을거쳐도_대시보드로이동(client):
+    page = client.get("/auth/register?next=/dashboard")
+    assert 'name="next" value="/dashboard"' in page.text
+    response = signup(client, **{"next": "/dashboard"})
+    assert response.headers["location"] == "/auth/login?registered=true&next=/dashboard"
+    assert 'name="next" value="/dashboard"' in client.get(response.headers["location"]).text
+    assert signin(client, **{"next": "/dashboard"}).headers["location"] == "/dashboard"
+
+
+@pytest.mark.parametrize("destination", ["https://other.example/", "//other.example/", "/\\other.example", "/unknown"])
+def test_로그인복귀주소는_허용된앱화면만사용(client, destination):
+    signup(client)
+    response = signin(client, **{"next": destination})
+    assert response.headers["location"] == "/customers"
+
+
+def test_이미로그인한사용자는_대시보드로그인링크에서바로이동(client):
+    signup(client)
+    signin(client)
+    response = client.get("/auth/login?next=/dashboard", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/dashboard"
+
+
 def test_가입_로그인_고객진입_쿠키와_비밀번호해시(client):
     response = signup(client)
     assert response.status_code == 303
@@ -279,7 +329,10 @@ def test_만료된토큰_브라우저는_로그인이동과_만료안내(client,
     install_token(client, frozen_time, remaining)
     response = client.get(path, headers={"Accept": "text/html"}, follow_redirects=False)
     assert response.status_code == 303
-    assert response.headers["location"] == "/auth/login?expired=true"
+    expected = "/auth/login?expired=true"
+    if path == "/dashboard":
+        expected += "&next=/dashboard"
+    assert response.headers["location"] == expected
     assert "Max-Age=0" in response.headers["set-cookie"]
     assert COOKIE_NAME not in client.cookies
     page = client.get(response.headers["location"], headers={"Accept": "text/html"})

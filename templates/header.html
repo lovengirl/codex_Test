@@ -4,6 +4,7 @@
   <nav aria-label="주 메뉴" class="site-links">
     <a href="/"{% if current_path == '/' %} aria-current="page"{% endif %}>홈</a>
     <a href="/customers"{% if current_path == '/customers' or current_path.startswith('/customers/') %} aria-current="page"{% endif %}>고객 목록</a>
+    <a href="/dashboard"{% if current_path == '/dashboard' or current_path.startswith('/dashboard/') %} aria-current="page"{% endif %}>대시보드</a>
   </nav>
   <div class="site-account">
     {% if user %}

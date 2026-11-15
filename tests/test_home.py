@@ -47,7 +47,7 @@ def test_홈_비로그인_로그인유도_로그인후_인사와목록바로가�
 @pytest.mark.parametrize("path,active", [
     ("/", "/"), ("/customers", "/customers"), ("/customers?page=1", "/customers"),
     ("/customers/new", "/customers"), ("/customers/1", "/customers"),
-    ("/customers/1/edit", "/customers"), ("/dashboard", None),
+    ("/customers/1/edit", "/customers"), ("/dashboard", "/dashboard"),
     ("/auth/login", None), ("/auth/register", None), ("/docs", None), ("/redoc", None),
 ])
 def test_모든화면_base상속_공통헤더_활성메뉴(signed_in_client, path, active):

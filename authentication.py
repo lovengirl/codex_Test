@@ -37,7 +37,10 @@ async def authentication_required_response(request: Request, exc: Authentication
     if "application/json" in accepted:
         response = JSONResponse({"detail": "로그인이 필요합니다."}, status_code=401)
     else:
-        response = RedirectResponse("/auth/login?expired=true", status_code=303)
+        location = "/auth/login?expired=true"
+        if request.url.path == "/dashboard" or request.url.path.startswith("/dashboard/"):
+            location += "&next=/dashboard"
+        response = RedirectResponse(location, status_code=303)
     response.headers["Cache-Control"] = "no-store"
     response.headers["Vary"] = "Accept"
     clear_auth_cookie(response)

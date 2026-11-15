@@ -5,9 +5,11 @@
 <section class="panel">
   <h1>{{ '회원가입' if registering else '로그인' }}</h1>
   {% if expired %}<p class="error" role="alert">세션이 만료되었습니다</p>{% endif %}
+  {% if destination == '/dashboard' %}<p>로그인 후 매출 대시보드와 자연어 질문을 이용할 수 있습니다.</p>{% endif %}
   {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
   {% if registered %}<p class="success" role="status">회원가입이 완료되었습니다. 로그인해 주세요.</p>{% endif %}
   <form class="fields" action="/auth/{{ mode }}" method="post">
+    <input type="hidden" name="next" value="{{ destination }}">
     {% if registering %}
     <label>이름<input name="name" autocomplete="name" required></label>
     {% endif %}
@@ -19,7 +21,7 @@
     <small id="password-help">비밀번호는 UTF-8 기준 1~72바이트로 입력해 주세요.</small>
     <button class="submit" type="submit">{{ '회원가입' if registering else '로그인' }}</button>
   </form>
-  {% if registering %}<p><a href="/auth/login">로그인으로 이동</a></p>
-  {% else %}<p><a href="/auth/register">회원가입</a></p>{% endif %}
+  {% if registering %}<p><a href="/auth/login{% if destination == '/dashboard' %}?next=/dashboard{% endif %}">로그인으로 이동</a></p>
+  {% else %}<p><a href="/auth/register{% if destination == '/dashboard' %}?next=/dashboard{% endif %}">회원가입</a></p>{% endif %}
 </section>
 {% endblock %}
