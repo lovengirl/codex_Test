@@ -280,3 +280,44 @@ def test_PDF여러페이지에서도_전체월과_한글헤더유지():
     assert len(pdf.pages) > 1
     assert all('구분' in page.extract_text() for page in pdf.pages)
     assert '2009-12' in pdf.pages[-1].extract_text()
+
+
+@pytest.mark.parametrize('extension', ['csv', 'xlsx', 'pdf'])
+def test_카드_차트_Export는_같은집계이며_숨김직후값도갱신(dashboard_client, extension):
+    client = dashboard_client
+    seed_sales(client)
+    page = client.get('/dashboard')
+    assert '<dt>고객 수</dt><dd>2명</dd>' in page.text
+    assert '<dt>주문 수</dt><dd>4건</dd>' in page.text
+    assert '<dt>총매출</dt><dd>8,000원</dd>' in page.text
+    chart = json.loads(re.search(
+        r'<script id="monthly-sales-data" type="application/json">(.*?)</script>', page.text,
+    ).group(1))
+    assert sum(item['sales'] for item in chart) == page.context['metrics']['total_sales']
+    assert client.post('/customers/1/delete', follow_redirects=False).status_code == 303
+    page = client.get('/dashboard')
+    assert page.context['metrics'] == {
+        'customer_count': 1, 'order_count': 0, 'total_sales': 0, 'average_order': 0,
+    }
+    assert page.context['monthly_sales'] == []
+    assert '표시할 매출이 없습니다.' in page.text
+    report = client.get(f'/dashboard/export/{extension}')
+    assert report.status_code == 200
+    if extension == 'csv':
+        rows = list(csv.reader(StringIO(report.content.decode('utf-8-sig'))))
+        assert [float(row[2]) for row in rows[1:]] == [1, 0, 0, 0]
+        assert len(rows) == 5
+    elif extension == 'xlsx':
+        workbook = load_workbook(BytesIO(report.content))
+        try:
+            assert [workbook.active.cell(row, 3).value for row in range(6, 10)] == [1, 0, 0, 0]
+            assert workbook.active.max_row == 9
+        finally:
+            workbook.close()
+    else:
+        pdf_text = '\n'.join(page.extract_text() for page in PdfReader(BytesIO(report.content)).pages)
+        assert '고객 수' in pdf_text and '총매출' in pdf_text
+        assert '8,000' not in pdf_text and '2025-01' not in pdf_text
+    with client.app.state.engine.connect() as connection:
+        assert connection.scalar(text('SELECT COUNT(*) FROM orders')) == 7
+    print(f'[통과] 카드·차트·{extension} 동일 집계, 고객 숨김 직후 반영, 원본 주문 7건 보존')
