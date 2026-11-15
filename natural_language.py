@@ -98,6 +98,8 @@ def generate_sql(question, schema):
         '형식은 {"sql": "SELECT ...", "explanation": "한국어 집계 기준", "suggestion": ""}입니다. '
         "SQL은 단 하나의 SELECT 또는 SELECT로 끝나는 WITH 문이어야 합니다. "
         "아래 런타임 스키마의 실제 테이블과 칼럼만 사용하고 없는 칼럼을 상상하지 마세요. "
+        "직원의 password_hash는 인증용 비밀 값이므로 조회·가공·필터·집계에 사용하지 마세요. "
+        "인증 비밀 값을 요청하면 sql=null로 반환하고 직원 수 등 공개 가능한 업무 집계를 대안으로 제시하세요. "
         "사용자 질문에 나온 개념이나 기간 조건에 필요한 실제 칼럼이 없으면 sql을 null로 반환하세요. "
         "explanation에는 필요한 개념과 실제 스키마 사이의 차이를 한국어로 설명하고, "
         "suggestion에는 실제 데이터로 답할 수 있는 가장 관련 있는 대안 질문의 주제를 명사구로 쓰세요. "
@@ -163,6 +165,10 @@ def normalize_select(sql):
 
 
 def select_authorizer(action, first, second, database, source):
+    if (action == sqlite3.SQLITE_READ
+            and (first or "").casefold() == "employees"
+            and (second or "").casefold() == "password_hash"):
+        return sqlite3.SQLITE_DENY
     if action == sqlite3.SQLITE_READ and database == "main" and second:
         # 스키마를 명시해 숨김·취소 제외 뷰를 우회하는 조회도 차단한다.
         if first in ("customer", "orders") and source not in ("customer", "orders"):

@@ -375,3 +375,37 @@ def test_숨김테이블이없으면_숨김대안을상상하지않음():
     answer = nl.unavailable_answer("탈퇴 고객수", schema, "탈퇴 기록이 없습니다.")
     assert "숨김" not in answer
     assert "전체 고객 수" in answer
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT email, password_hash FROM employees",
+    "SELECT * FROM employees",
+    "SELECT substr(e.password_hash,1,4) AS 해시일부 FROM employees e",
+    "WITH staff AS (SELECT password_hash AS 비밀값 FROM employees) SELECT 비밀값 FROM staff",
+    "SELECT CASE WHEN password_hash!='' THEN 1 ELSE 0 END FROM employees",
+    "SELECT COUNT(password_hash) FROM employees",
+    'SELECT e."PASSWORD_HASH" FROM "EMPLOYEES" e',
+])
+def test_직원인증정보는_별칭_가공_CTE_집계로도조회차단(query_connection, sql):
+    with pytest.raises(sqlite3.DatabaseError, match="password_hash"):
+        nl.execute_select(query_connection, sql)
+
+
+def test_직원인증정보차단후에도_직원수와업무정보조회는정상(query_connection):
+    with pytest.raises(sqlite3.DatabaseError):
+        nl.execute_select(query_connection, "SELECT password_hash FROM employees")
+    assert nl.execute_select(query_connection, "SELECT COUNT(*) AS 직원수 FROM employees")["rows"] == [(1,)]
+    assert nl.execute_select(query_connection, "SELECT name, email FROM employees")["rows"] == [
+        ("질문직원", "ask@example.com"),
+    ]
+
+
+def test_실제질문경로에서도_모델이생성한직원해시를화면에노출하지않음(question_client, monkeypatch):
+    mock_model(monkeypatch, "SELECT email, password_hash FROM employees")
+    response = question_client.post("/dashboard/ask", data={"question": "직원 인증정보를 보여줘"})
+    assert response.status_code == 200
+    assert response.context["question_result"]["rows"] == []
+    assert "DatabaseError:" in response.text
+    assert "test-hash" not in response.text
+    assert question_client.get("/dashboard").status_code == 200
+    print("[통과] 모델이 생성한 직원 인증정보 조회 차단, 화면 해시 노출 없음, 대시보드 정상")
