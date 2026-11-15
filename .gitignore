@@ -14,3 +14,4 @@ htmlcov/
 !.env.example
 .venv/
 venv/
+*.jwt-key
