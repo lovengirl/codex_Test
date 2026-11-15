@@ -2,5 +2,33 @@
 {% block title %}고객 · Customer Manager{% endblock %}
 {% block content %}
 <h1>고객 관리</h1>
-<p>인증된 직원 전용 페이지입니다.</p>
+<p>총 {{ total }}명 · {{ page }} / {{ total_pages }}페이지 · 페이지당 20명</p>
+{% if items %}
+<div style="overflow-x: auto;">
+  <table style="width: 100%; text-align: left; border-spacing: 0 12px;">
+    <caption>고객 목록</caption>
+    <thead>
+      <tr><th scope="col">번호</th><th scope="col">이름</th><th scope="col">이메일</th><th scope="col">주소</th><th scope="col">등급</th></tr>
+    </thead>
+    <tbody>
+      {% for customer in items %}
+      <tr><td>{{ customer.id }}</td><td>{{ customer.name }}</td><td>{{ customer.email }}</td><td>{{ customer.address }}</td><td>{{ customer.grade }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p>표시할 고객이 없습니다.</p>
+{% endif %}
+<nav aria-label="고객 목록 페이지">
+  {% if page > 1 %}
+  <a href="{{ request.url_for('customers') }}?page=1">처음</a>
+  <a href="{{ request.url_for('customers') }}?page={{ page - 1 }}" rel="prev">이전</a>
+  {% endif %}
+  <span aria-current="page">{{ page }} / {{ total_pages }}</span>
+  {% if page < total_pages %}
+  <a href="{{ request.url_for('customers') }}?page={{ page + 1 }}" rel="next">다음</a>
+  <a href="{{ request.url_for('customers') }}?page={{ total_pages }}">마지막</a>
+  {% endif %}
+</nav>
 {% endblock %}

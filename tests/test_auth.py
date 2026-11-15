@@ -194,7 +194,7 @@ def test_기존_DB_칼럼추가_행보존_반복시작(tmp_path):
         ]
         assert {row[0] for row in connection.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
-        )} == {"customer", "product", "employees", "orders"}
+        )} == {"customer", "hidden_customer", "product", "employees", "orders"}
 
 
 def test_앱재시작_새클라이언트에서도_인증지속(tmp_path):

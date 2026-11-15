@@ -2,9 +2,11 @@
 
 from datetime import datetime, timezone, timedelta
 from contextlib import closing
+import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import socket
 import sqlite3
 import ssl
@@ -40,9 +42,12 @@ def verify_migrated_copy(copy_path):
             source_tables = source.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
             ).fetchall()
-            assert source_tables == target.execute(
+            target_tables = target.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-            ).fetchall(), "테이블 목록이 다릅니다."
+            ).fetchall()
+            assert set(target_tables) == set(source_tables) | {("hidden_customer",)}, "테이블 목록이 다릅니다."
+            if ("hidden_customer",) not in source_tables:
+                assert target.execute("SELECT count(*) FROM hidden_customer").fetchone()[0] == 0
             for name, in source_tables:
                 quoted = '"' + name.replace('"', '""') + '"'
                 original = source.execute(f"PRAGMA table_info({quoted})").fetchall()
@@ -54,16 +59,43 @@ def verify_migrated_copy(copy_path):
                 else:
                     assert migrated == original
                 selected = ", ".join('"' + column.replace('"', '""') + '"' for column in columns)
-                query = f"SELECT {selected} FROM {quoted} ORDER BY id"
+                query = f"SELECT {selected} FROM {quoted} ORDER BY {selected}"
                 assert source.execute(query).fetchall() == target.execute(query).fetchall(), (
                     "기존 행이 변경되었습니다."
                 )
 
 
-def verify_authentication(context, report):
+def verify_customer_pagination(client, db_path, report):
+    """임시 복사본에만 검증 데이터를 추가해 실제 HTTPS 페이지 응답을 측정한다."""
+    with closing(sqlite3.connect(db_path)) as connection:
+        with connection:
+            connection.execute("INSERT OR IGNORE INTO hidden_customer SELECT id FROM customer")
+            first_id = connection.execute("SELECT coalesce(max(id), 0) + 1 FROM customer").fetchone()[0]
+            unique = str(time.time_ns())
+            connection.executemany(
+                "INSERT INTO customer (name, email, address, grade) VALUES (?, ?, '서울', '일반')",
+                [(f"페이지검증{index}", f"pagination-{unique}-{index}@example.com")
+                 for index in range(10_000)],
+            )
+    durations = []
+    for page in (1, 250, 500):
+        started = time.perf_counter()
+        response = client.get("/customers", params={"page": page})
+        durations.append(time.perf_counter() - started)
+        assert response.status_code == 200
+        assert f"총 10000명 · {page} / 500페이지" in response.text
+        ids = [int(value) for value in re.findall(r"<tr><td>(\d+)</td>", response.text)]
+        start_id = first_id + (page - 1) * 20
+        assert ids == list(range(start_id, start_id + 20))
+    assert max(durations) < 1, "고객 목록 HTTPS 응답이 1초를 초과했습니다."
+    assert client.get("/customers?page=501").status_code == 404
+    report(f"[통과] 임시 DB 고객 10,000명 → 500페이지, HTTPS 1·250·500페이지 최대 응답 {max(durations):.3f}초")
+
+
+def verify_authentication(context, report, db_path, base_url):
     account = {"name": "인증검증직원", "email": "https-auth-" + str(time.time_ns()) + "@example.com",
                "address": "검증용 주소", "password": "검증용비밀번호123!"}
-    with httpx.Client(base_url="https://127.0.0.1:8000", verify=context,
+    with httpx.Client(base_url=base_url, verify=context,
                       trust_env=False, follow_redirects=False,
                       headers={"Accept": "application/json"}) as client:
         assert client.get("/customers").status_code == 401
@@ -86,6 +118,7 @@ def verify_authentication(context, report):
             assert page.status_code == 200
             assert "인증검증직원님 안녕하세요" in page.text and "로그아웃" in page.text
         report("[통과] 페이지 이동 후 인증 유지 및 모든 HTML 페이지의 이름·로그아웃 표시")
+        verify_customer_pagination(client, db_path, report)
         logout = client.post("/auth/logout")
         assert logout.status_code == 303 and logout.headers["location"] == "/auth/login"
         assert "Max-Age=0" in logout.headers["set-cookie"]
@@ -96,6 +129,12 @@ def verify_authentication(context, report):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="임시 DB를 사용하는 HTTPS 실행 검증")
+    parser.add_argument("--port", type=int, default=8000, help="검증 서버 포트 (기본 8000)")
+    port = parser.parse_args().port
+    if not 1 <= port <= 65535:
+        parser.error("포트는 1부터 65535 사이여야 합니다.")
+    base_url = f"https://127.0.0.1:{port}"
     lines = []
 
     def report(message):
@@ -108,8 +147,8 @@ def main():
         report("검증 시각: " + datetime.now(timezone(timedelta(hours=9))).isoformat())
         report("Python 버전: " + sys.version.split()[0])
         with socket.socket() as probe:
-            if probe.connect_ex(("127.0.0.1", 8000)) == 0:
-                raise RuntimeError("8000 포트가 사용 중입니다. 기존 서버 종료 후 다시 실행해 주세요.")
+            if probe.connect_ex(("127.0.0.1", port)) == 0:
+                raise RuntimeError(f"{port} 포트가 사용 중입니다. --port로 빈 포트를 지정해 주세요.")
         before = snapshot()
         temporary = tempfile.TemporaryDirectory(prefix="customer-auth-https-")
         copy_path = Path(temporary.name) / "verification.db"
@@ -124,9 +163,9 @@ def main():
                 [sys.executable, "-c", "\n".join([
                     "from pathlib import Path", "import sys", "import uvicorn",
                     "from main import create_app",
-                    "uvicorn.run(create_app(Path(sys.argv[1])), host='127.0.0.1', port=8000, "
+                    "uvicorn.run(create_app(Path(sys.argv[1])), host='127.0.0.1', port=int(sys.argv[2]), "
                     "ssl_keyfile='.certs/localhost.key', ssl_certfile='.certs/localhost.crt')",
-                ]), str(copy_path)],
+                ]), str(copy_path), str(port)],
                 cwd=ROOT, stdout=output, stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
             )
@@ -136,7 +175,7 @@ def main():
                     if server.poll() is not None:
                         raise RuntimeError("Uvicorn 시작 실패: uvicorn-verification.log를 확인해 주세요.")
                     try:
-                        response = opener.open("https://127.0.0.1:8000/", timeout=2)
+                        response = opener.open(base_url + "/", timeout=2)
                         with response:
                             assert response.status == 200
                             assert "Customer Manager" in response.read().decode("utf-8")
@@ -145,17 +184,17 @@ def main():
                         if time.monotonic() >= deadline:
                             raise
                         time.sleep(0.2)
-                report("[통과] GET https://127.0.0.1:8000/ → 200 OK")
+                report(f"[통과] GET {base_url}/ → 200 OK")
                 for route in ("/health", "/docs", "/openapi.json"):
-                    with opener.open("https://127.0.0.1:8000" + route, timeout=5) as response:
+                    with opener.open(base_url + route, timeout=5) as response:
                         assert response.status == 200
                         if route == "/health":
                             assert json.load(response) == {"status": "ok", "database": "ok"}
                     report(f"[통과] GET {route} → 200 OK")
                 report("[통과] 인증서 신뢰 및 127.0.0.1 호스트명 검증")
                 verify_migrated_copy(copy_path)
-                report("[통과] 임시 복사본의 nullable password_hash 확장 및 기존 전체 행·칼럼 보존")
-                verify_authentication(context, report)
+                report("[통과] 임시 복사본의 hidden_customer 생성·nullable password_hash 확장 및 기존 전체 행·칼럼 보존")
+                verify_authentication(context, report, copy_path, base_url)
             finally:
                 server.terminate()
                 try:

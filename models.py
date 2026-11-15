@@ -8,6 +8,9 @@ SCHEMA = (
         address TEXT NOT NULL,
         grade TEXT NOT NULL CHECK (grade IN ('VIP', '일반', '신규'))
     )""",
+    """CREATE TABLE IF NOT EXISTS hidden_customer (
+        customer_id INTEGER PRIMARY KEY REFERENCES customer(id)
+    )""",
     """CREATE TABLE IF NOT EXISTS product (
         id INTEGER PRIMARY KEY,
         name TEXT NOT NULL,
