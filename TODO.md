@@ -62,3 +62,26 @@
 전주 대비 변화율과 상위 고객 비중도 현재 집계 입력에 없어 Insight에서 확인 불가로 표시한다.
 숫자를 추정하거나 추가 DB 쿼리를 실행하지 않는 동작을 검증했다.
 실행 확인 로그는 Git에서 제외된 `verification.log`, 서버 출력은 `uvicorn-verification.log`에 남긴다.
+
+## 테스트 피라미드·Coverage 완료 100% (4/4)
+
+- [x] Unit: `tests/unit`, 고객 입력·검색 정규화·JSON·SELECT 정규화·변경 구문 차단·Insight 수치 검증
+- [x] Integration: `tests/integration`, SQLite·인증·고객 업무 흐름·Export·SQL 실행, `browser` 하위 핵심 사용자 여정 1건
+- [x] API: `tests/api`, 200·401·403 및 첫 페이지·마지막 페이지·범위 밖 HTTP 계약
+- [x] Regression 및 Coverage: 와일드카드·JWT 만료·환각 87건 포함, 분기 포함 80% 기준 적용
+
+| 최종 전체 실행의 층별 결과 | 통과 |
+| --- | ---: |
+| Unit | 337개 |
+| Integration | 268개 |
+| API | 34개 |
+
+합계 639개 통과(79.13초), 실패·오류·건너뜀 0건.
+라인·분기 통합 커버리지 97.67%, 모든 측정 대상 모듈 80% 이상.
+자연어 SQL과 AI Insight는 라인·분기 모두 100%.
+실행: `python -m pytest --cov --cov-report=term-missing --cov-report=html --cov-report=json:.pytest_tmp/coverage.json --cov-report=xml:.pytest_tmp/coverage.xml -q`.
+측정 범위·모듈별 결과·잔여 미검증 영역은 [Coverage 보고서](docs/COVERAGE.md)에 기록했다.
+기존 311개 테스트의 함수·클래스 132개는 본문과 매개변수를 그대로 보존했다.
+`python -m unittest discover -s tests -v`도 기존 3개 테스트가 통과했다.
+E2E는 임시 DB·인증서·자동 할당 포트를 사용하고 종료 시 브라우저와 서버를 정리한다.
+실패 화면·추적 파일은 Git에서 제외된 `.pytest_tmp/` 아래에 저장한다.

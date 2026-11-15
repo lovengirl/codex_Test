@@ -24,7 +24,7 @@ Python, FastAPI, SQLAlchemy로 만드는 고객관리 웹 서비스입니다. S1
 | 테스트 | 카드·차트·Export 값 비교, 자연어 SQL·Insight 회귀 검증, 인증·고객 관리·DB 보존 검증 |
 
 고객 관리, 매출 대시보드·Export, 자연어 질문과 AI Insight를 구현하고 통합 검증했습니다.
-전체 테스트는 311개이며 태스크별 완료 상태와 리뷰 반영 내역은 [TODO.md](TODO.md)에서 확인합니다.
+테스트는 Unit·Integration·API 피라미드로 구성하며 태스크별 완료 상태와 리뷰 반영 내역은 [TODO.md](TODO.md)에서 확인합니다.
 
 고객 목록에서 검색어·등급·지역을 적용하면 조건에 맞는 목록과 페이지네이션을 표시합니다.
 조건은 URL과 입력 폼에 유지되어 새로고침하거나 링크를 공유해도 같은 조건으로 조회합니다.
@@ -126,11 +126,29 @@ API 호출·SQL 처리 오류는 예외 타입과 메시지를 화면과 콘솔�
 ## 테스트
 
 ```powershell
-# 첫 pytest: 홈 화면 200 OK
-python -m pytest tests/test_home.py -v
+# 함수 단위: 가장 많은 사례, HTTP·외부 API 호출 없음
+python -m pytest tests/unit -q
+
+# Integration: 실제 DB·파일·모듈 결합과 업무 흐름
+python -m pytest tests/integration -q
+
+# API: HTTP 응답 계약, 인증·출처·페이지 경계
+python -m pytest tests/api -q
+
+# E2E 최초 준비: 실제 Chromium 설치
+python -m playwright install chromium
+
+# 실제 HTTPS 브라우저: 로그인 → 고객 등록 → 검색 → 로그아웃
+python -m pytest tests/integration/browser -q -s
 
 # 전체 테스트: 기존 unittest 포함
 python -m pytest -v
+
+# 기존 버그 회귀 검증만 선택
+python -m pytest -m regression -q
+
+# 앱 전체 라인·분기 커버리지, 80% 미만이면 비정상 종료
+python -m pytest --cov --cov-report=term-missing --cov-report=html --cov-report=json:.pytest_tmp/coverage.json --cov-report=xml:.pytest_tmp/coverage.xml -q
 
 # 실제 HTTPS 서버와 기존 DB 보존 확인
 python scripts/verify_https.py
@@ -146,11 +164,34 @@ python scripts/verify_https.py --port 18001
 대시보드 카드·차트·Export 3형식의 값 일치와 갱신, 자연어 SQL 정상 조회·스키마 환각·인증정보 차단,
 AI Insight의 추가 SQL 0회·수치 근거·생성 오류 시 생략도 검증합니다.
 
-최근 통합 검증에서는 전체 **311개 테스트가 통과**했습니다.
+기존 311개 테스트의 검증을 보존하면서 세 층으로 재구성하고 사례를 추가했습니다.
+
+| 층 | 실행 명령 | 검증 범위 |
+| --- | --- | --- |
+| Unit | `python -m pytest tests/unit -q` | 함수 입력·반환값·경계 사례 |
+| Integration | `python -m pytest tests/integration -q` | 실제 SQLite·인증·고객 업무 흐름·보고서·모델 어댑터 |
+| API | `python -m pytest tests/api -q` | HTTP 상태·화면·접근 권한·페이지 경계 계약 |
+
+전체 실행 결과와 모듈별 커버리지·미검증 영역은 [Coverage 보고서](docs/COVERAGE.md)에 기록합니다.
+HTML 상세 보고서는 실행 후 `htmlcov/index.html`, 기계 판독 결과는 `.pytest_tmp/coverage.json`과 `.pytest_tmp/coverage.xml`에 생성됩니다.
+
 별도 포트의 HTTPS 검증에서 대시보드 응답은 **0.207초**였으며,
 카드·차트와 CSV·Excel·PDF의 값을 비교하고 원본 DB 보존도 확인했습니다.
 리뷰에서 발견된 직원 비밀번호 해시 조회 경로는 차단하고 회귀 테스트를 추가했습니다.
 성능 수치는 검증 당시 환경의 측정값이며, 자연어 질문과 Insight의 외부 API 응답 시간은 별도입니다.
+
+Unit은 고객 입력·검색 정규화·JSON 파싱·SQL 허용/차단·Insight 수치 검증 등 함수의 입력과 반환값을 검증합니다.
+할인 계산은 현재 구현된 기능에 없으므로 실제 존재하는 검증 로직에 집중합니다.
+API는 `TestClient`로 200·401·403 및 첫 페이지·마지막 페이지·범위 밖 응답까지 검증합니다.
+Integration은 DB 저장·숨김·동시 수정·집계·Export·SQL 실행의 모듈 간 결합을 검증합니다.
+여러 요청과 실제 DB를 함께 사용하는 업무 시나리오는 Integration에 두고, API에는 HTTP 계약 검증을 유지합니다.
+`tests/integration/browser`는 Playwright의 실제 Chromium으로 핵심 사용자 여정 1건만 실행합니다.
+매번 임시 DB·인증서·자동 할당 HTTPS 포트를 사용하고 서버와 브라우저를 종료하므로 실행 중인 개발 서버와 분리됩니다.
+자체 서명 인증서 허용은 테스트 브라우저 컨텍스트에만 적용합니다.
+실패 시 스크린샷과 추적 ZIP을 해당 `.pytest_tmp/` 폴더에 저장합니다.
+각 실행 끝에는 한글 층별 요약을 출력하며 `-m unit`, `-m integration`, `-m api`로도 선택할 수 있습니다.
+`-m regression`은 와일드카드·JWT 만료·스키마/Insight 환각 회귀 사례, `-m browser`는 브라우저 시나리오를 선택합니다.
+자동 테스트는 실제 OpenAI 호출 대신 제어된 모델 응답으로 정상·오류·환각을 재현합니다.
 
 pytest 임시 DB는 프로젝트의 `.pytest_tmp/run-<실행별 ID>/`에 생성합니다.
 사용자 계정이나 동시 실행 간 폴더 권한 충돌을 방지하도록 실행마다 별도 경로를 사용합니다.
@@ -189,14 +230,13 @@ customer-manager/
 │   └── verify_https.py
 ├── tests/
 │   ├── conftest.py
-│   ├── test_home.py
-│   ├── test_app.py
-│   ├── test_auth.py
-│   ├── test_customers.py
-│   ├── test_dashboard.py
-│   ├── test_natural_language.py
-│   ├── test_ai_insight.py
-│   └── test_temp_paths.py
+│   ├── unit/               # 함수 검증: 입력·SQL·Insight·보고서
+│   ├── integration/        # SQLite·업무 흐름·보고서·모델 어댑터
+│   │   └── browser/        # 실제 Chromium 핵심 사용자 여정
+│   └── api/                # HTTP 계약: 상태·접근 권한·페이지 경계
+├── pytest.ini              # 층별 표식과 테스트 탐색 설정
+├── .coveragerc             # 앱 전체 측정 범위, 분기 포함 80% 기준
+├── docs/COVERAGE.md        # 커버리지 요약과 미검증 영역
 ├── TODO.md                 # 태스크별 진행률과 검증 결과
 └── AGENTS.md               # 실행·테스트·개발 규칙
 ```
