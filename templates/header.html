@@ -1,5 +1,6 @@
 {% set current_path = request.url.path %}
 <header class="site-header">
+  <a class="site-brand" href="/">Customer Manager</a>
   <nav aria-label="주 메뉴" class="site-links">
     <a href="/"{% if current_path == '/' %} aria-current="page"{% endif %}>홈</a>
     <a href="/customers"{% if current_path == '/customers' or current_path.startswith('/customers/') %} aria-current="page"{% endif %}>고객 목록</a>

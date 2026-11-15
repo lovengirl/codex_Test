@@ -35,12 +35,12 @@ def test_홈_비로그인_로그인유도_로그인후_인사와목록바로가�
     page = client.get("/")
     main = page.text.partition('<main class="">')[2].partition("</main>")[0]
     assert "화면검증직원님, 환영합니다." in main
-    assert '<a href="/customers">고객 목록 바로가기</a>' in main
+    assert '<a class="home-primary" href="/customers">고객 목록 바로가기</a>' in main
     assert "로그인해 주세요" not in main
     assert client.post("/auth/logout", follow_redirects=False).status_code == 303
     page = client.get("/")
     assert "고객 관리를 시작하려면 로그인해 주세요." in page.text
-    assert '<a href="/auth/login">로그인하기</a>' in page.text
+    assert '<a class="home-primary" href="/auth/login">로그인하기</a>' in page.text
     assert "화면검증직원" not in page.text
 
 
