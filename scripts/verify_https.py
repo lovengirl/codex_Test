@@ -2,10 +2,13 @@
 
 from datetime import datetime, timezone, timedelta
 from contextlib import closing
+import csv
 from html import unescape
+from io import BytesIO, StringIO
 import argparse
 import hashlib
 import json
+from math import isclose
 from pathlib import Path
 import re
 import socket
@@ -19,6 +22,8 @@ from urllib.error import URLError
 from urllib.request import ProxyHandler, HTTPSHandler, build_opener
 
 import httpx
+from openpyxl import load_workbook
+from pypdf import PdfReader
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -179,6 +184,68 @@ def verify_customer_crud(client, db_path, employee_email, report):
     report("[통과] 숨김 고객은 이메일 검색 결과에서도 제외")
 
 
+def verify_dashboard_exports(client, db_path, report):
+    """인증된 실제 HTTPS 카드·차트와 세 다운로드의 값을 독립 SQL과 비교한다."""
+    with closing(sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True)) as connection:
+        customer_count = connection.execute(
+            "SELECT COUNT(*) FROM customer c WHERE NOT EXISTS "
+            "(SELECT 1 FROM hidden_customer h WHERE h.customer_id=c.id)"
+        ).fetchone()[0]
+        order_count, total_sales, average_order = connection.execute(
+            "SELECT COUNT(*), COALESCE(SUM(o.total_amount),0), COALESCE(AVG(o.total_amount),0) "
+            "FROM orders o WHERE o.status!='취소' AND NOT EXISTS "
+            "(SELECT 1 FROM hidden_customer h WHERE h.customer_id=o.customer_id)"
+        ).fetchone()
+        monthly = connection.execute(
+            "SELECT substr(o.order_date,1,7), SUM(o.total_amount) FROM orders o "
+            "WHERE o.status!='취소' AND NOT EXISTS "
+            "(SELECT 1 FROM hidden_customer h WHERE h.customer_id=o.customer_id) "
+            "GROUP BY substr(o.order_date,1,7) ORDER BY 1"
+        ).fetchall()
+    started = time.monotonic()
+    page = client.get("/dashboard")
+    elapsed = time.monotonic() - started
+    assert page.status_code == 200 and elapsed < 1, "대시보드 응답이 1초 예산을 초과했습니다."
+    for label, value in (
+        ("고객 수", f"{customer_count:,}명"), ("주문 수", f"{order_count:,}건"),
+        ("총매출", f"{total_sales:,}원"), ("평균 주문금액", f"{average_order:,.0f}원"),
+    ):
+        assert f"<dt>{label}</dt><dd>{value}</dd>" in page.text, f"카드 값 불일치: {label}"
+    match = re.search(r'<script id="monthly-sales-data" type="application/json">(.*?)</script>', page.text)
+    chart = json.loads(match.group(1)) if match else []
+    assert chart == [{"month": month, "sales": amount} for month, amount in monthly], "차트 값이 다릅니다."
+    report(f"[통과] HTTPS 카드 4종·월별 차트가 독립 SQL과 일치, 응답 {elapsed:.3f}초")
+    expected = [customer_count, order_count, total_sales, average_order] + [amount for _, amount in monthly]
+    for extension in ("csv", "xlsx", "pdf"):
+        assert f'href="/dashboard/export/{extension}"' in page.text
+        response = client.get(f"/dashboard/export/{extension}")
+        assert response.status_code == 200 and "attachment;" in response.headers["content-disposition"]
+        assert response.headers["cache-control"] == "no-store"
+        if extension == "csv":
+            rows = list(csv.reader(StringIO(response.content.decode("utf-8-sig"))))
+            assert rows[0] == ["구분", "항목", "값", "단위"]
+            assert len(rows) == len(expected) + 1
+            assert [int(rows[index+1][2]) for index in (0, 1, 2)] == expected[:3]
+            assert isclose(float(rows[4][2]), average_order, rel_tol=1e-14)
+            assert [int(row[2]) for row in rows[5:]] == expected[4:]
+        elif extension == "xlsx":
+            workbook = load_workbook(BytesIO(response.content))
+            try:
+                sheet = workbook["대시보드"]
+                values = [sheet.cell(row, 3).value for row in range(6, 6+len(expected))]
+                assert values[:3] == expected[:3] and values[4:] == expected[4:]
+                assert isclose(values[3], average_order, rel_tol=1e-14)
+            finally:
+                workbook.close()
+        else:
+            assert response.content.startswith(b"%PDF-")
+            reader = PdfReader(BytesIO(response.content))
+            content = "\n".join(page.extract_text() for page in reader.pages)
+            assert "매출 대시보드 보고서" in content and f"{total_sales:,}" in content
+            assert all(month in content and f"{amount:,}" in content for month, amount in monthly)
+        report(f"[통과] HTTPS {extension} 다운로드·실제 형식·집계값 일치")
+
+
 def verify_authentication(context, report, db_path, base_url):
     account = {"name": "인증검증직원", "email": "https-auth-" + str(time.time_ns()) + "@example.com",
                "address": "검증용 주소", "password": "검증용비밀번호123!"}
@@ -207,7 +274,7 @@ def verify_authentication(context, report, db_path, base_url):
             assert page.text.count('<header class="site-header">') == 1
             header = page.text.partition('<header class="site-header">')[2].partition("</header>")[0]
             assert "홈</a>" in header and "고객 목록</a>" in header
-            if path in ("/", "/customers"):
+            if path in ("/", "/customers", "/dashboard"):
                 assert f'href="{path}" aria-current="page"' in header
             else:
                 assert 'aria-current="page"' not in header
@@ -216,6 +283,7 @@ def verify_authentication(context, report, db_path, base_url):
                 assert "고객 목록 바로가기" in page.text
         report("[통과] 페이지 이동 후 인증 유지 및 모든 HTML 페이지의 이름·로그아웃 표시")
         report("[통과] 모든 HTML 페이지의 공통 내비게이션·현재 메뉴 활성 표시·로그인 홈 인사와 목록 바로가기")
+        verify_dashboard_exports(client, db_path, report)
         verify_customer_crud(client, db_path, account["email"], report)
         verify_customer_pagination(client, db_path, report)
         logout = client.post("/auth/logout")
