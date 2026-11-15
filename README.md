@@ -101,4 +101,3 @@ customer-manager/
 - 변경은 의미 단위로 나눠 커밋합니다. 예: `docs : 프로젝트 README 추가`.
 - DB, 인증서·개인키, 비밀 설정, 캐시, 로그는 커밋하지 않습니다.
 - 세부 규칙은 [AGENTS.md](AGENTS.md)를 따릅니다.
-
